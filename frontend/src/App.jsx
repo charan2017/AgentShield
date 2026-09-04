@@ -1,0 +1,6314 @@
+import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import {
+  Activity,
+  AlertTriangle,
+  CalendarClock,
+  ArrowUpRight,
+  Ban,
+  Bot,
+  CheckCircle2,
+  ChevronRight,
+  Clock3,
+  CreditCard,
+  FileText,
+  LayoutDashboard,
+  LockKeyhole,
+  Menu,
+  RefreshCw,
+  Search,
+  Send,
+  Settings,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  Users,
+  Wallet,
+  X,
+  Zap,
+} from "lucide-react";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import clsx from "clsx";
+
+import "./App.css";
+
+const API_URL = "http://127.0.0.1:8000";
+
+/* =========================================================
+   NAVIGATION
+   ========================================================= */
+
+const NAV_ITEMS = [
+  {
+    id: "dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+  },
+  {
+    id: "payment-agent",
+    label: "AI Payment Agent",
+    icon: Bot,
+  },
+  {
+    id: "payments",
+    label: "Payments",
+    icon: CreditCard,
+  },
+  {
+    id: "scheduled",
+    label: "Scheduled Payments",
+    icon: CalendarClock,
+  },
+  {
+    id: "subscriptions",
+    label: "Recurring Bills",
+    icon: RefreshCw,
+  },
+  {
+    id: "approvals",
+    label: "Approvals",
+    icon: Users,
+  },
+  {
+    id: "threats",
+    label: "Threat Lab",
+    icon: ShieldAlert,
+  },
+  {
+    id: "ledger",
+    label: "Action Ledger",
+    icon: FileText,
+  },
+  {
+    id: "agents",
+    label: "Agents",
+    icon: Activity,
+  },
+];
+
+/* =========================================================
+   HELPERS
+   ========================================================= */
+
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function formatINR(value) {
+  const amount = Number(value || 0);
+
+  return `₹${amount.toLocaleString("en-IN", {
+    maximumFractionDigits: 0,
+  })}`;
+}
+
+function formatRazorpayAmount(value) {
+  return formatINR(Number(value || 0) / 100);
+}
+
+function formatTime(value) {
+  if (!value) return "--:--";
+
+  try {
+    return new Date(value).toLocaleTimeString(
+      "en-IN",
+      {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }
+    );
+  } catch {
+    return "--:--";
+  }
+}
+
+function formatDateTime(value) {
+  if (!value) return "Unknown";
+
+  try {
+    return new Date(value).toLocaleString(
+      "en-IN",
+      {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }
+    );
+  } catch {
+    return "Unknown";
+  }
+}
+
+function eventLabel(type) {
+  if (!type) return "SYSTEM EVENT";
+
+  return String(type)
+    .replaceAll("_", " ")
+    .replace(
+      /\b\w/g,
+      (letter) => letter.toUpperCase()
+    );
+}
+
+function decisionFromEvent(event) {
+  return String(
+    event?.metadata?.decision ||
+      event?.metadata?.status ||
+      ""
+  ).toUpperCase();
+}
+
+function statusClass(value) {
+  const status = String(value || "").toUpperCase();
+
+  if (
+    status.includes("ALLOW") ||
+    status.includes("APPROV") ||
+    status.includes("SUCCESS") ||
+    status.includes("VERIF") ||
+    status.includes("CAPTURE") ||
+    status === "PAID"
+  ) {
+    return "status-success";
+  }
+
+  if (
+    status.includes("REVIEW") ||
+    status.includes("PENDING") ||
+    status.includes("AUTHOR") ||
+    status.includes("PROCESS")
+  ) {
+    return "status-warning";
+  }
+
+  if (
+    status.includes("BLOCK") ||
+    status.includes("FAIL") ||
+    status.includes("REJECT")
+  ) {
+    return "status-danger";
+  }
+
+  return "status-neutral";
+}
+
+async function apiGet(path) {
+  const response = await fetch(
+    `${API_URL}${path}`
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Request failed with status ${response.status}`
+    );
+  }
+
+  return response.json();
+}
+
+/* =========================================================
+   APP
+   ========================================================= */
+
+export default function App() {
+  const [activePage, setActivePage] =
+    useState("dashboard");
+
+  const [sidebarOpen, setSidebarOpen] =
+    useState(false);
+
+  const [ledger, setLedger] = useState([]);
+  const [approvals, setApprovals] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [scheduledPayments, setScheduledPayments] = useState([]);
+  const [subscriptions, setSubscriptions] = useState([]);
+
+  const [selectedEvent, setSelectedEvent] =
+    useState(null);
+
+  const [backendStatus, setBackendStatus] =
+    useState("checking");
+
+  const [loading, setLoading] =
+    useState(true);
+
+  const [refreshing, setRefreshing] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+  async function loadData(
+    showRefresh = false
+  ) {
+    if (showRefresh) {
+      setRefreshing(true);
+    }
+
+    try {
+      const [
+        ledgerData,
+        approvalData,
+        paymentData,
+        scheduledData,
+        subscriptionData,
+      ] = await Promise.all([
+        apiGet("/ledger"),
+        apiGet("/approvals/pending"),
+        apiGet("/payments"),
+        apiGet("/scheduled-payments"),
+        apiGet("/subscriptions"),
+      ]);
+
+      setLedger(
+        safeArray(ledgerData?.events)
+      );
+
+      setApprovals(
+        safeArray(
+          approvalData?.requests
+        )
+      );
+
+      setPayments(
+        safeArray(
+          paymentData?.payments
+        )
+      );
+
+      setScheduledPayments(
+        safeArray(
+          scheduledData?.items
+        )
+      );
+
+      setSubscriptions(
+        safeArray(
+          subscriptionData?.items
+        )
+      );
+
+      setBackendStatus("online");
+      setError("");
+    } catch (err) {
+      console.error(err);
+
+      setBackendStatus("offline");
+
+      setError(
+        "Unable to connect to AgentShield backend."
+      );
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    loadData();
+
+    const timer = setInterval(
+      () => {
+        loadData();
+      },
+      5000
+    );
+
+    return () =>
+      clearInterval(timer);
+  }, []);
+
+  const stats = useMemo(() => {
+    let allowed = 0;
+    let review = 0;
+    let blocked = 0;
+
+    for (const event of ledger) {
+      if (
+        event.event_type !==
+        "SECURITY_DECISION"
+      ) {
+        continue;
+      }
+
+      const decision =
+        decisionFromEvent(event);
+
+      if (decision === "ALLOW") {
+        allowed++;
+      }
+
+      if (decision === "REVIEW") {
+        review++;
+      }
+
+      if (decision === "BLOCK") {
+        blocked++;
+      }
+    }
+
+    return {
+      allowed,
+      review,
+      blocked,
+      pending: approvals.length,
+    };
+  }, [ledger, approvals]);
+
+  const currentRisk = useMemo(() => {
+    const decisions = ledger.filter(
+      (event) =>
+        event.event_type ===
+        "SECURITY_DECISION"
+    );
+
+    const latest = decisions.at(-1);
+
+    return Math.min(
+      Math.max(
+        Number(
+          latest?.metadata?.risk_score ||
+            0
+        ),
+        0
+      ),
+      100
+    );
+  }, [ledger]);
+
+  const activityData = useMemo(() => {
+    const source = ledger.slice(-12);
+
+    if (source.length === 0) {
+      return [
+        { name: "1", activity: 1 },
+        { name: "2", activity: 2 },
+        { name: "3", activity: 1 },
+        { name: "4", activity: 3 },
+        { name: "5", activity: 2 },
+        { name: "6", activity: 1 },
+      ];
+    }
+
+    return source.map(
+      (event, index) => {
+        const decision =
+          decisionFromEvent(event);
+
+        let activity = 1;
+
+        if (decision === "REVIEW") {
+          activity = 3;
+        }
+
+        if (decision === "BLOCK") {
+          activity = 5;
+        }
+
+        return {
+          name: String(index + 1),
+          activity,
+        };
+      }
+    );
+  }, [ledger]);
+
+  const pageTitles = {
+    dashboard:
+      "Security Overview",
+    "payment-agent":
+      "AI Payment Agent",
+    payments:
+      "Protected Payments",
+    scheduled:
+      "Scheduled Payments",
+    subscriptions:
+      "Recurring Bills",
+    approvals:
+      "Human Approval Center",
+    threats:
+      "Agent Threat Lab",
+    ledger:
+      "Action Audit Ledger",
+    agents:
+      "Agent Monitoring",
+    settings:
+      "System Settings",
+  };
+
+  function navigate(page) {
+    setActivePage(page);
+    setSidebarOpen(false);
+    setSelectedEvent(null);
+  }
+
+  return (
+    <div className="app-shell">
+
+      <div className="ambient ambient-one" />
+      <div className="ambient ambient-two" />
+      <div className="ambient ambient-three" />
+
+      <AnimatePresence>
+        {sidebarOpen && (
+          <motion.div
+            className="mobile-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() =>
+              setSidebarOpen(false)
+            }
+          />
+        )}
+      </AnimatePresence>
+
+      {/* =====================================================
+          SIDEBAR
+          ===================================================== */}
+
+      <aside
+        className={clsx(
+          "glass-sidebar",
+          sidebarOpen &&
+            "sidebar-open"
+        )}
+      >
+        <div className="sidebar-brand">
+
+          <div className="brand-mark">
+            <Shield size={21} />
+          </div>
+
+          <div className="brand-copy">
+            <strong>
+              AgentShield
+            </strong>
+
+            <span>
+              PAYMENT SECURITY
+            </span>
+          </div>
+
+          <button
+            type="button"
+            className="mobile-close-button"
+            onClick={() =>
+              setSidebarOpen(false)
+            }
+          >
+            <X size={17} />
+          </button>
+
+        </div>
+
+        <div className="sidebar-divider" />
+
+        <nav className="sidebar-nav">
+
+          <div className="nav-group-label">
+            CONSOLE
+          </div>
+
+          {NAV_ITEMS.map(
+            (item) => {
+              const Icon =
+                item.icon;
+
+              return (
+                <button
+                  type="button"
+                  key={item.id}
+                  className={clsx(
+                    "sidebar-nav-item",
+                    activePage ===
+                      item.id &&
+                      "sidebar-nav-item-active"
+                  )}
+                  onClick={() =>
+                    navigate(
+                      item.id
+                    )
+                  }
+                >
+                  <Icon size={17} />
+
+                  <span>
+                    {item.label}
+                  </span>
+
+                  {item.id ===
+                    "approvals" &&
+                    approvals.length >
+                      0 && (
+                      <span className="nav-count">
+                        {
+                          approvals.length
+                        }
+                      </span>
+                    )}
+
+                  {item.id ===
+                    "scheduled" &&
+                    scheduledPayments.filter(
+                      (item) =>
+                        item.status ===
+                        "AWAITING_APPROVAL"
+                    ).length > 0 && (
+                      <span className="nav-count">
+                        {scheduledPayments.filter(
+                          (item) =>
+                            item.status ===
+                            "AWAITING_APPROVAL"
+                        ).length}
+                      </span>
+                    )}
+
+                  {item.id ===
+                    "subscriptions" &&
+                    subscriptions.filter(
+                      (item) =>
+                        item.status ===
+                        "AWAITING_APPROVAL"
+                    ).length > 0 && (
+                      <span className="nav-count">
+                        {subscriptions.filter(
+                          (item) =>
+                            item.status ===
+                            "AWAITING_APPROVAL"
+                        ).length}
+                      </span>
+                    )}
+
+                  {activePage ===
+                    item.id && (
+                    <ChevronRight
+                      size={15}
+                      className="nav-active-arrow"
+                    />
+                  )}
+                </button>
+              );
+            }
+          )}
+
+          <div className="nav-group-label nav-group-spaced">
+            SYSTEM
+          </div>
+
+          <button
+            type="button"
+            className="sidebar-nav-item"
+            onClick={() =>
+              navigate(
+                "settings"
+              )
+            }
+          >
+            <Settings size={17} />
+            <span>Settings</span>
+          </button>
+
+        </nav>
+
+        <div className="sidebar-bottom">
+
+          <div className="sidebar-system-card">
+
+            <div className="system-card-icon">
+              <LockKeyhole
+                size={16}
+              />
+            </div>
+
+            <div>
+              <div className="system-card-title">
+                {backendStatus ===
+                "online"
+                  ? "Protected"
+                  : backendStatus ===
+                    "offline"
+                  ? "Disconnected"
+                  : "Checking"}
+              </div>
+
+              <div className="system-card-subtitle">
+                Security gateway
+              </div>
+            </div>
+
+            <span
+              className={clsx(
+                "online-pulse",
+                backendStatus ===
+                  "offline" &&
+                  "offline-pulse"
+              )}
+            />
+
+          </div>
+
+          <div className="sidebar-footer">
+            AgentShield · v1.0
+          </div>
+
+        </div>
+      </aside>
+
+      {/* =====================================================
+          MAIN
+          ===================================================== */}
+
+      <div className="main-shell">
+
+        <header className="topbar">
+
+          <div className="topbar-left">
+
+            <button
+              type="button"
+              className="mobile-menu-button"
+              onClick={() =>
+                setSidebarOpen(true)
+              }
+            >
+              <Menu size={19} />
+            </button>
+
+            <div>
+
+              <div className="topbar-eyebrow">
+                AGENTSHIELD / CONSOLE
+              </div>
+
+              <div className="topbar-title">
+                {
+                  pageTitles[
+                    activePage
+                  ]
+                }
+              </div>
+
+            </div>
+
+          </div>
+
+          <div className="topbar-right">
+
+            <button
+              type="button"
+              className="refresh-button"
+              disabled={refreshing}
+              onClick={() =>
+                loadData(true)
+              }
+            >
+              <RefreshCw
+                size={15}
+                className={
+                  refreshing
+                    ? "spin"
+                    : ""
+                }
+              />
+
+              <span>
+                Refresh
+              </span>
+            </button>
+
+            <div className="system-status-pill">
+
+              <span
+                className={clsx(
+                  "system-status-dot",
+                  backendStatus ===
+                    "online"
+                    ? "dot-online"
+                    : backendStatus ===
+                      "offline"
+                    ? "dot-offline"
+                    : "dot-checking"
+                )}
+              />
+
+              <span>
+                {backendStatus ===
+                "online"
+                  ? "System Protected"
+                  : backendStatus ===
+                    "offline"
+                  ? "Backend Offline"
+                  : "Checking"}
+              </span>
+
+            </div>
+
+          </div>
+
+        </header>
+
+        <main className="dashboard-content">
+
+          {error && (
+            <motion.div
+              className="glass-alert error-alert"
+              initial={{
+                opacity: 0,
+                y: -6,
+              }}
+              animate={{
+                opacity: 1,
+                y: 0,
+              }}
+            >
+              <AlertTriangle
+                size={15}
+              />
+
+              <span>
+                {error}
+              </span>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setError("")
+                }
+              >
+                <X size={14} />
+              </button>
+            </motion.div>
+          )}
+
+          {loading ? (
+            <LoadingPage />
+          ) : (
+            <>
+              {activePage ===
+                "dashboard" && (
+                <DashboardPage
+                  stats={stats}
+                  currentRisk={
+                    currentRisk
+                  }
+                  activityData={
+                    activityData
+                  }
+                  approvals={
+                    approvals
+                  }
+                  payments={
+                    payments
+                  }
+                  ledger={ledger}
+                  onNavigate={
+                    navigate
+                  }
+                  onSelectEvent={
+                    setSelectedEvent
+                  }
+                />
+              )}
+
+              {activePage ===
+                "payment-agent" && (
+                <AIPaymentAgentPage
+                  approvals={approvals}
+                  onRefresh={() =>
+                    loadData(true)
+                  }
+                  onNavigate={navigate}
+                />
+              )}
+
+              {activePage ===
+                "payments" && (
+                <PaymentsPage
+                  payments={
+                    payments
+                  }
+                  ledger={ledger}
+                  onSelectEvent={
+                    setSelectedEvent
+                  }
+                  onRefresh={() =>
+                    loadData(true)
+                  }
+                />
+              )}
+
+              {activePage ===
+                "scheduled" && (
+                <ScheduledPaymentsPage
+                  scheduledPayments={
+                    scheduledPayments
+                  }
+                  approvals={approvals}
+                  onRefresh={() =>
+                    loadData(true)
+                  }
+                  onNavigate={navigate}
+                />
+              )}
+
+              {activePage ===
+                "subscriptions" && (
+                <SubscriptionsPage
+                  subscriptions={subscriptions}
+                  onRefresh={() => loadData(true)}
+                />
+              )}
+
+              {activePage ===
+                "approvals" && (
+                <ApprovalsPage
+                  approvals={
+                    approvals
+                  }
+                  scheduledPayments={
+                    scheduledPayments
+                  }
+                  onRefresh={() =>
+                    loadData(true)
+                  }
+                />
+              )}
+
+              {activePage ===
+                "threats" && (
+                <ThreatPage
+                  ledger={ledger}
+                  onRun={() =>
+                    loadData(true)
+                  }
+                  onSelectEvent={
+                    setSelectedEvent
+                  }
+                />
+              )}
+
+              {activePage ===
+                "ledger" && (
+                <LedgerPage
+                  ledger={ledger}
+                  selectedEvent={
+                    selectedEvent
+                  }
+                  onSelectEvent={
+                    setSelectedEvent
+                  }
+                />
+              )}
+
+              {activePage ===
+                "agents" && (
+                <AgentsPage
+                  ledger={ledger}
+                />
+              )}
+
+              {activePage ===
+                "settings" && (
+                <SettingsPage />
+              )}
+            </>
+          )}
+
+        </main>
+
+        <AnimatePresence>
+          {selectedEvent && (
+            <EventDrawer
+              event={
+                selectedEvent
+              }
+              onClose={() =>
+                setSelectedEvent(
+                  null
+                )
+              }
+            />
+          )}
+        </AnimatePresence>
+
+        <footer className="app-footer">
+
+          <span>
+            AgentShield
+          </span>
+
+          <span>
+            AI agent → risk gateway →
+            Razorpay
+          </span>
+
+          <span>
+            {backendStatus ===
+            "online"
+              ? "Operational"
+              : "Disconnected"}
+          </span>
+
+        </footer>
+
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================
+   LOADING
+   ========================================================= */
+
+function LoadingPage() {
+  return (
+    <div className="page-stack">
+
+      <section className="glass-hero loading-hero">
+
+        <div className="skeleton skeleton-title" />
+
+        <div className="skeleton skeleton-line" />
+
+        <div className="skeleton skeleton-line short" />
+
+      </section>
+
+      <section className="metric-grid">
+
+        {[1, 2, 3, 4].map(
+          (item) => (
+            <div
+              className="glass-metric"
+              key={item}
+            >
+              <div className="skeleton skeleton-box" />
+            </div>
+          )
+        )}
+
+      </section>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   DASHBOARD
+   ========================================================= */
+
+function DashboardPage({
+  stats,
+  currentRisk,
+  activityData,
+  approvals,
+  payments,
+  ledger,
+  onNavigate,
+  onSelectEvent,
+}) {
+  return (
+    <div className="page-stack">
+
+      <section className="glass-hero">
+
+        <div className="hero-copy">
+
+          <div className="section-kicker">
+            <Sparkles size={13} />
+            LIVE SECURITY CONSOLE
+          </div>
+
+          <h1>
+            Protect every payment
+            <span>
+              {" "}
+              an agent tries to make.
+            </span>
+          </h1>
+
+          <p>
+            AgentShield evaluates
+            AI-initiated payments against
+            user intent, delegated policy,
+            risk signals, behavioral history,
+            and approval requirements.
+          </p>
+
+          <div className="hero-tags">
+
+            <span>
+              <ShieldCheck
+                size={13}
+              />
+              Intent aware
+            </span>
+
+            <span>
+              <LockKeyhole
+                size={13}
+              />
+              Policy enforced
+            </span>
+
+            <span>
+              <Activity size={13} />
+              Behavior monitored
+            </span>
+
+          </div>
+
+        </div>
+
+        <div className="hero-shield">
+
+          <div className="shield-orbit shield-orbit-one" />
+          <div className="shield-orbit shield-orbit-two" />
+
+          <div className="shield-glow-card">
+
+            <Shield size={43} />
+
+            <strong>
+              SYSTEM
+              <br />
+              PROTECTED
+            </strong>
+
+            <span>
+              {stats.blocked} threats
+              stopped
+            </span>
+
+          </div>
+
+        </div>
+
+      </section>
+
+      <section className="metric-grid">
+
+        <MetricCard
+          label="Allowed"
+          value={stats.allowed}
+          subtitle="Successful security decisions"
+          icon={CheckCircle2}
+          tone="success"
+        />
+
+        <MetricCard
+          label="Review"
+          value={stats.review}
+          subtitle="Human decisions required"
+          icon={Clock3}
+          tone="warning"
+        />
+
+        <MetricCard
+          label="Blocked"
+          value={stats.blocked}
+          subtitle="Policy violations stopped"
+          icon={Ban}
+          tone="danger"
+        />
+
+        <MetricCard
+          label="Pending"
+          value={stats.pending}
+          subtitle="Awaiting human approval"
+          icon={Users}
+          tone="neutral"
+        />
+
+      </section>
+
+      <section className="split-grid">
+
+        <div className="glass-panel chart-panel">
+
+          <PanelHeader
+            eyebrow="PAYMENT ACTIVITY"
+            title="Security activity"
+            right={
+              <span className="live-label">
+                <span />
+                LIVE
+              </span>
+            }
+          />
+
+          <div className="chart-wrap">
+
+            <ResponsiveContainer
+              width="100%"
+              height="100%"
+            >
+
+              <AreaChart
+                data={activityData}
+              >
+
+                <defs>
+
+                  <linearGradient
+                    id="activityGradient"
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
+                    <stop
+                      offset="0%"
+                      stopColor="rgba(90,220,255,0.34)"
+                    />
+
+                    <stop
+                      offset="100%"
+                      stopColor="rgba(90,220,255,0)"
+                    />
+                  </linearGradient>
+
+                </defs>
+
+                <CartesianGrid
+                  vertical={false}
+                  stroke="rgba(255,255,255,0.06)"
+                />
+
+                <XAxis
+                  dataKey="name"
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{
+                    fill: "#607488",
+                    fontSize: 10,
+                  }}
+                />
+
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  tick={{
+                    fill: "#607488",
+                    fontSize: 10,
+                  }}
+                  width={24}
+                />
+
+                <Tooltip
+                  contentStyle={{
+                    background:
+                      "rgba(10,18,29,0.95)",
+                    border:
+                      "1px solid rgba(150,190,220,0.16)",
+                    borderRadius: 12,
+                    color: "#dce7ef",
+                  }}
+                />
+
+                <Area
+                  type="monotone"
+                  dataKey="activity"
+                  stroke="#65dcff"
+                  strokeWidth={2}
+                  fill="url(#activityGradient)"
+                  dot={false}
+                />
+
+              </AreaChart>
+
+            </ResponsiveContainer>
+
+          </div>
+
+        </div>
+
+        <RiskPanel
+          currentRisk={
+            currentRisk
+          }
+          approvals={
+            approvals
+          }
+        />
+
+      </section>
+
+      <section className="three-grid">
+
+        <div className="glass-panel compact-panel">
+
+          <PanelHeader
+            eyebrow="ACTIVE AGENT"
+            title="AGENT-001"
+            right={
+              <span className="agent-status">
+                <span />
+                MONITORED
+              </span>
+            }
+          />
+
+          <div className="agent-stat-block">
+
+            <div>
+              <span>
+                PERMISSION SCOPE
+              </span>
+
+              <strong>
+                ₹5,000 / transaction
+              </strong>
+            </div>
+
+            <div>
+              <span>
+                DAILY LIMIT
+              </span>
+
+              <strong>
+                ₹15,000
+              </strong>
+            </div>
+
+          </div>
+
+          <button
+            type="button"
+            className="panel-link"
+            onClick={() =>
+              onNavigate(
+                "agents"
+              )
+            }
+          >
+            View agent telemetry
+            <ArrowUpRight
+              size={14}
+            />
+          </button>
+
+        </div>
+
+        <div className="glass-panel compact-panel">
+
+          <PanelHeader
+            eyebrow="HUMAN APPROVAL"
+            title="Review queue"
+            right={
+              <span className="queue-count">
+                {
+                  approvals.length
+                }
+              </span>
+            }
+          />
+
+          {approvals.length ===
+          0 ? (
+            <div className="empty-mini">
+
+              <CheckCircle2
+                size={24}
+              />
+
+              <span>
+                No pending approvals
+              </span>
+
+            </div>
+          ) : (
+            <div className="mini-list">
+
+              {approvals
+                .slice(0, 3)
+                .map(
+                  (approval) => (
+                    <div
+                      className="mini-list-row"
+                      key={
+                        approval.approval_id
+                      }
+                    >
+
+                      <div>
+
+                        <strong>
+                          {formatINR(
+                            approval.amount
+                          )}
+                        </strong>
+
+                        <span>
+                          →
+                          {" "}
+                          {
+                            approval.recipient
+                          }
+                        </span>
+
+                      </div>
+
+                      <span className="status-pill status-warning">
+                        REVIEW
+                      </span>
+
+                    </div>
+                  )
+                )}
+
+            </div>
+          )}
+
+          <button
+            type="button"
+            className="panel-link"
+            onClick={() =>
+              onNavigate(
+                "approvals"
+              )
+            }
+          >
+            Open approval center
+            <ArrowUpRight
+              size={14}
+            />
+          </button>
+
+        </div>
+
+        <div className="glass-panel compact-panel">
+
+          <PanelHeader
+            eyebrow="PAYMENT LEDGER"
+            title="Recent activity"
+          />
+
+          {payments.length ===
+          0 ? (
+            <div className="empty-mini">
+
+              <Wallet size={24} />
+
+              <span>
+                No payment orders yet
+              </span>
+
+            </div>
+          ) : (
+            <div className="mini-list">
+
+              {payments
+                .slice(0, 3)
+                .map(
+                  (payment) => (
+                    <div
+                      className="mini-list-row"
+                      key={
+                        payment.order_id
+                      }
+                    >
+
+                      <div>
+
+                        <strong>
+                          {formatRazorpayAmount(
+                            payment.amount
+                          )}
+                        </strong>
+
+                        <span>
+                          {
+                            payment.status
+                          }
+                        </span>
+
+                      </div>
+
+                      <span
+                        className={clsx(
+                          "status-pill",
+                          statusClass(
+                            payment.status
+                          )
+                        )}
+                      >
+                        {
+                          payment.status
+                        }
+                      </span>
+
+                    </div>
+                  )
+                )}
+
+            </div>
+          )}
+
+          <button
+            type="button"
+            className="panel-link"
+            onClick={() =>
+              onNavigate(
+                "payments"
+              )
+            }
+          >
+            View payments
+            <ArrowUpRight
+              size={14}
+            />
+          </button>
+
+        </div>
+
+      </section>
+
+      <section className="glass-panel">
+
+        <PanelHeader
+          eyebrow="SECURITY EVENTS"
+          title="Live action ledger"
+          right={
+            <button
+              type="button"
+              className="small-outline-button"
+              onClick={() =>
+                onNavigate(
+                  "ledger"
+                )
+              }
+            >
+              View full ledger
+              <ArrowUpRight
+                size={13}
+              />
+            </button>
+          }
+        />
+
+        {ledger.length ===
+        0 ? (
+          <div className="empty-large">
+
+            <FileText size={30} />
+
+            <strong>
+              No security events yet
+            </strong>
+
+            <span>
+              AgentShield activity
+              will appear here in
+              real time.
+            </span>
+
+          </div>
+        ) : (
+          <div className="event-table">
+
+            {ledger
+              .slice()
+              .reverse()
+              .slice(0, 8)
+              .map(
+                (event) => (
+                  <EventRow
+                    key={
+                      event.event_id
+                    }
+                    event={event}
+                    onSelect={
+                      onSelectEvent
+                    }
+                  />
+                )
+              )}
+
+          </div>
+        )}
+
+      </section>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   RISK PANEL
+   ========================================================= */
+
+function RiskPanel({
+  currentRisk,
+  approvals,
+}) {
+  return (
+    <div className="glass-panel risk-panel">
+
+      <PanelHeader
+        eyebrow="RISK ENGINE"
+        title="Current risk posture"
+      />
+
+      <div className="risk-score-shell">
+
+        <div className="risk-ring">
+
+          <svg
+            viewBox="0 0 140 140"
+            className="risk-svg"
+          >
+
+            <circle
+              cx="70"
+              cy="70"
+              r="56"
+              fill="none"
+              stroke="rgba(255,255,255,0.08)"
+              strokeWidth="8"
+            />
+
+            <circle
+              cx="70"
+              cy="70"
+              r="56"
+              fill="none"
+              stroke="#66ddff"
+              strokeWidth="8"
+              strokeLinecap="round"
+              strokeDasharray={
+                2 * Math.PI * 56
+              }
+              strokeDashoffset={
+                2 *
+                Math.PI *
+                56 *
+                (1 -
+                  currentRisk /
+                    100)
+              }
+              transform="rotate(-90 70 70)"
+            />
+
+          </svg>
+
+          <div className="risk-score-center">
+
+            <strong>
+              {currentRisk}
+            </strong>
+
+            <span>
+              / 100
+            </span>
+
+          </div>
+
+        </div>
+
+        <div className="risk-caption">
+
+          <div className="risk-state">
+            {currentRisk < 30
+              ? "LOW RISK"
+              : currentRisk < 70
+              ? "MODERATE RISK"
+              : "HIGH RISK"}
+          </div>
+
+          <p>
+            Latest AgentShield
+            security decision.
+          </p>
+
+        </div>
+
+      </div>
+
+      <div className="risk-indicator-list">
+
+        <RiskIndicator
+          label="Intent validation"
+          value="ACTIVE"
+          positive
+        />
+
+        <RiskIndicator
+          label="Policy enforcement"
+          value="ACTIVE"
+          positive
+        />
+
+        <RiskIndicator
+          label="Behavior monitoring"
+          value="ACTIVE"
+          positive
+        />
+
+        <RiskIndicator
+          label="Human approval"
+          value={
+            approvals.length >
+            0
+              ? `${approvals.length} PENDING`
+              : "CLEAR"
+          }
+          positive={
+            approvals.length === 0
+          }
+        />
+
+      </div>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   METRIC CARD
+   ========================================================= */
+
+function MetricCard({
+  label,
+  value,
+  subtitle,
+  icon: Icon,
+  tone,
+}) {
+  return (
+    <motion.div
+      className={clsx(
+        "glass-metric",
+        `metric-${tone}`
+      )}
+      whileHover={{
+        y: -3,
+      }}
+    >
+
+      <div className="metric-top">
+
+        <span className="metric-icon">
+          <Icon size={17} />
+        </span>
+
+        <ArrowUpRight
+          size={14}
+          className="metric-arrow"
+        />
+
+      </div>
+
+      <div className="metric-value">
+        {value}
+      </div>
+
+      <div className="metric-label">
+        {label}
+      </div>
+
+      <div className="metric-subtitle">
+        {subtitle}
+      </div>
+
+    </motion.div>
+  );
+}
+
+/* =========================================================
+   PANEL HEADER
+   ========================================================= */
+
+function PanelHeader({
+  eyebrow,
+  title,
+  right,
+}) {
+  return (
+    <div className="panel-header">
+
+      <div>
+
+        <div className="panel-eyebrow">
+          {eyebrow}
+        </div>
+
+        <h2>
+          {title}
+        </h2>
+
+      </div>
+
+      {right}
+
+    </div>
+  );
+}
+
+/* =========================================================
+   RISK INDICATOR
+   ========================================================= */
+
+function RiskIndicator({
+  label,
+  value,
+  positive,
+}) {
+  return (
+    <div className="risk-indicator">
+
+      <div className="risk-indicator-label">
+
+        <span
+          className={
+            positive
+              ? "indicator-dot indicator-good"
+              : "indicator-dot indicator-warning"
+          }
+        />
+
+        {label}
+
+      </div>
+
+      <strong>
+        {value}
+      </strong>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   EVENT ROW
+   ========================================================= */
+
+function EventRow({
+  event,
+  onSelect,
+}) {
+  const decision =
+    decisionFromEvent(event);
+
+  return (
+    <button
+      type="button"
+      className="event-row"
+      onClick={() =>
+        onSelect(event)
+      }
+    >
+
+      <div className="event-icon">
+
+        {decision ===
+        "BLOCK" ? (
+          <Ban size={14} />
+        ) : event.event_type?.includes(
+            "PAYMENT"
+          ) ? (
+          <CreditCard
+            size={14}
+          />
+        ) : event.event_type?.includes(
+            "APPROVAL"
+          ) ? (
+          <Users size={14} />
+        ) : (
+          <Activity
+            size={14}
+          />
+        )}
+
+      </div>
+
+      <div className="event-main">
+
+        <strong>
+          {eventLabel(
+            event.event_type
+          )}
+        </strong>
+
+        <span>
+          {event.message ||
+            "Security event recorded."}
+        </span>
+
+      </div>
+
+      <div className="event-agent">
+        {event.agent_id ||
+          "--"}
+      </div>
+
+      <div className="event-time">
+        {formatTime(
+          event.timestamp
+        )}
+      </div>
+
+      <ChevronRight
+        size={15}
+        className="event-chevron"
+      />
+
+    </button>
+  );
+}
+
+/* =========================================================
+   AI PAYMENT AGENT
+   ========================================================= */
+function AIPaymentAgentPage({
+  approvals,
+  onRefresh,
+  onNavigate,
+}) {
+  const [messages, setMessages] = useState([
+    {
+      id: "welcome",
+      role: "agent",
+      text:
+        "AgentShield is ready. Tell me what you want to pay, schedule, or remind you about. I will route the request through the security engine before money can move.",
+    },
+  ]);
+  const [command, setCommand] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+
+  const suggestions = [
+    "pay 100 to Rahul",
+    "pay 3000 to Rahul tomorrow",
+    "remind me to pay 1200 to electricity monthly",
+  ];
+
+  async function loadRazorpayScript() {
+    if (window.Razorpay) return true;
+    return new Promise((resolve) => {
+      const existing = document.querySelector(
+        'script[src="https://checkout.razorpay.com/v1/checkout.js"]'
+      );
+      if (existing) {
+        existing.addEventListener("load", () => resolve(true), { once: true });
+        existing.addEventListener("error", () => resolve(false), { once: true });
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.async = true;
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+  }
+
+  async function openRazorpayCheckout(paymentResult) {
+    if (!paymentResult?.order_id) return;
+    const keyId = import.meta.env.VITE_RAZORPAY_KEY_ID;
+    if (!keyId) {
+      setError("Razorpay Test Key ID is missing. Add VITE_RAZORPAY_KEY_ID to frontend/.env.");
+      return;
+    }
+    setCheckoutLoading(true);
+    setError("");
+    try {
+      const loaded = await loadRazorpayScript();
+      if (!loaded) throw new Error("Unable to load Razorpay Checkout.");
+      const options = {
+        key: keyId,
+        amount: Number(paymentResult.amount || 0),
+        currency: paymentResult.currency || "INR",
+        name: "AgentShield",
+        description: "AgentShield protected AI-agent payment",
+        order_id: paymentResult.order_id,
+        prefill: { name: paymentResult?.parsed_command?.recipient || "Customer" },
+        notes: {
+          agent_id: paymentResult.agent_id || "CHAT-AGENT-001",
+          session_id: paymentResult.session_id || "",
+          intent_id: paymentResult.intent_id || "",
+          approval_id: paymentResult.approval_id || "",
+        },
+        theme: { color: "#66dcff" },
+        handler: async function (response) {
+          try {
+            const verifyResponse = await fetch(`${API_URL}/razorpay/verify-payment`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              }),
+            });
+            const data = await verifyResponse.json();
+            if (!verifyResponse.ok) {
+              throw new Error(data.detail || "Payment verification failed.");
+            }
+            setMessages((current) => [
+              ...current,
+              {
+                id: `verification-${Date.now()}`,
+                role: "agent",
+                decision: "ALLOW",
+                text: "Payment completed and the Razorpay signature was verified successfully.",
+                data: { payment_id: response.razorpay_payment_id, order_id: response.razorpay_order_id },
+              },
+            ]);
+            onRefresh();
+          } catch (err) {
+            setError(err.message || "Unable to verify payment.");
+          } finally {
+            setCheckoutLoading(false);
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setCheckoutLoading(false);
+            setMessages((current) => [
+              ...current,
+              {
+                id: `dismissed-${Date.now()}`,
+                role: "agent",
+                text: "Razorpay Checkout was closed before payment completion.",
+              },
+            ]);
+          },
+        },
+      };
+      const razorpay = new window.Razorpay(options);
+      razorpay.on("payment.failed", (response) => {
+        setCheckoutLoading(false);
+        setError(response?.error?.description || "Razorpay payment failed.");
+      });
+      razorpay.open();
+    } catch (err) {
+      setCheckoutLoading(false);
+      setError(err.message || "Unable to open Razorpay Checkout.");
+    }
+  }
+
+  async function openRazorpaySubscriptionCheckout(subscriptionResult) {
+    if (!subscriptionResult?.subscription_id) return;
+
+    const keyId = import.meta.env.VITE_RAZORPAY_KEY_ID;
+    if (!keyId) {
+      setError("Razorpay Test Key ID is missing. Add VITE_RAZORPAY_KEY_ID to frontend/.env.");
+      return;
+    }
+
+    setCheckoutLoading(true);
+    setError("");
+    try {
+      const loaded = await loadRazorpayScript();
+      if (!loaded) throw new Error("Unable to load Razorpay Checkout.");
+
+      const options = {
+        key: keyId,
+        subscription_id: subscriptionResult.subscription_id,
+        name: "AgentShield",
+        description: "AgentShield protected recurring subscription",
+        prefill: { name: subscriptionResult.recipient || "Customer" },
+        notes: {
+          subscription_request_id: subscriptionResult.subscription_request_id || "",
+          agent_id: subscriptionResult.agent_id || "CHAT-AGENT-001",
+          session_id: subscriptionResult.session_id || "",
+          intent_id: subscriptionResult.intent_id || "",
+        },
+        theme: { color: "#66dcff" },
+        handler: async function (response) {
+          try {
+            const verifyResponse = await fetch(`${API_URL}/razorpay/verify-subscription`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                subscription_request_id: subscriptionResult.subscription_request_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_subscription_id: response.razorpay_subscription_id,
+                razorpay_signature: response.razorpay_signature,
+              }),
+            });
+            const data = await verifyResponse.json();
+            if (!verifyResponse.ok) throw new Error(data.detail || "Subscription authorization verification failed.");
+
+            setMessages((current) => [
+              ...current,
+              {
+                id: `subscription-verification-${Date.now()}`,
+                role: "agent",
+                decision: "ALLOW",
+                text: "Recurring subscription authorization completed and the Razorpay signature was verified successfully.",
+                data,
+              },
+            ]);
+            onRefresh();
+          } catch (err) {
+            setError(err.message || "Unable to verify subscription authorization.");
+          } finally {
+            setCheckoutLoading(false);
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setCheckoutLoading(false);
+            setMessages((current) => [
+              ...current,
+              {
+                id: `subscription-dismissed-${Date.now()}`,
+                role: "agent",
+                text: "Razorpay Subscription Checkout was closed before authorization completed.",
+              },
+            ]);
+          },
+        },
+      };
+
+      const razorpay = new window.Razorpay(options);
+      razorpay.on("payment.failed", (response) => {
+        setCheckoutLoading(false);
+        setError(response?.error?.description || "Razorpay subscription authorization failed.");
+      });
+      razorpay.open();
+    } catch (err) {
+      setCheckoutLoading(false);
+      setError(err.message || "Unable to open Razorpay Subscription Checkout.");
+    }
+  }
+
+  async function sendCommand(value = command) {
+    const text = String(value || "").trim();
+    if (!text || sending) return;
+    setSending(true);
+    setError("");
+    setMessages((current) => [
+      ...current,
+      { id: `user-${Date.now()}`, role: "user", text },
+    ]);
+    setCommand("");
+    try {
+      const response = await fetch(`${API_URL}/agent/command`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          command: text,
+          agent_id: "CHAT-AGENT-001",
+          session_id: `CHAT-SESSION-${Date.now()}`,
+          category: "personal_transfer",
+          merchant_known: true,
+          unusual: false,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "The AI Payment Agent rejected the command.");
+      const decision = data.decision;
+      const textMessage = data.message || (
+        decision === "ALLOW" ? "AgentShield approved the payment." :
+        decision === "REVIEW" ? "AgentShield paused the payment for human approval." :
+        decision === "SCHEDULED" ? "Payment scheduled successfully." :
+        decision === "REMINDER" ? "Monthly bill reminder created." :
+        "AgentShield blocked the request."
+      );
+      setMessages((current) => [
+        ...current,
+        { id: `agent-${Date.now()}`, role: "agent", decision, text: textMessage, data },
+      ]);
+      onRefresh();
+      if (decision === "ALLOW" && data.subscription_id) {
+        await openRazorpaySubscriptionCheckout(data);
+      } else if (decision === "ALLOW" && data.order_id) {
+        await openRazorpayCheckout(data);
+      }
+    } catch (err) {
+      setError(err.message || "Unable to reach the AI Payment Agent.");
+      setMessages((current) => [
+        ...current,
+        { id: `agent-error-${Date.now()}`, role: "agent", decision: "BLOCK", text: err.message || "I could not process that command." },
+      ]);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="page-intro">
+        <div className="section-kicker"><Bot size={13} /> AI-POWERED PAYMENT CONTROL</div>
+        <h1>AI Payment Agent</h1>
+        <p>Talk to AgentShield in natural language. Every request is parsed and checked before money can move.</p>
+      </section>
+
+      <section className="glass-panel" style={{ minHeight: 560, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "18px 20px", borderBottom: "1px solid rgba(148,163,184,.12)" }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <div style={{ width: 38, height: 38, borderRadius: 13, display: "grid", placeItems: "center", background: "rgba(102,220,255,.10)", border: "1px solid rgba(102,220,255,.22)", color: "#9feaff" }}><Bot size={20} /></div>
+            <div><strong style={{ fontSize: 15 }}>AgentShield Assistant</strong><div style={{ fontSize: 12, opacity: 0.62, marginTop: 3 }}>Secured command channel</div></div>
+          </div>
+          <span className="status-pill status-allow">ONLINE</span>
+        </div>
+
+        <div style={{ flex: 1, padding: 20, display: "flex", flexDirection: "column", gap: 16, overflowY: "auto" }}>
+          {messages.map((message) => {
+            const isUser = message.role === "user";
+            const decision = message.decision;
+            const borderColor = decision === "ALLOW" ? "rgba(74,222,128,.25)" : decision === "REVIEW" ? "rgba(251,191,36,.25)" : decision === "BLOCK" ? "rgba(248,113,113,.25)" : "rgba(148,163,184,.14)";
+            return (
+              <motion.div key={message.id} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
+                <div style={{ maxWidth: "82%", padding: "13px 15px", borderRadius: isUser ? "17px 17px 4px 17px" : "17px 17px 17px 4px", background: isUser ? "rgba(102,220,255,.10)" : "rgba(15,23,42,.58)", border: `1px solid ${isUser ? "rgba(102,220,255,.20)" : borderColor}` }}>
+                  <div style={{ fontSize: 13.5, lineHeight: 1.6 }}>{message.text}</div>
+                  {decision && <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+                    <span className={clsx("status-pill", statusClass(decision))}>{decision}</span>
+                    {decision === "REVIEW" && message.data?.approval_id && (
+                      <button type="button" className="secondary-action" onClick={() => onNavigate("approvals")}>
+                        Open Approval Center <ChevronRight size={13} />
+                      </button>
+                    )}
+                  </div>}
+                  {message.data?.schedule_id && <div style={{ marginTop: 9, fontSize: 11, opacity: 0.62 }}>Schedule: {message.data.schedule_id}</div>}
+                  {message.data?.order_id && <div style={{ marginTop: 9, fontSize: 11, opacity: 0.62 }}>Razorpay order: {message.data.order_id}</div>}
+                </div>
+              </motion.div>
+            );
+          })}
+          {checkoutLoading && <div style={{ fontSize: 12, opacity: 0.68, display: "flex", alignItems: "center", gap: 8 }}><RefreshCw size={13} className="spin" /> Opening secure Razorpay Checkout...</div>}
+        </div>
+
+        {error && <div className="glass-alert error-alert" style={{ margin: "0 20px 12px" }}><AlertTriangle size={15} /><span>{error}</span><button type="button" onClick={() => setError("")}><X size={14} /></button></div>}
+
+        <div style={{ padding: "0 20px 12px", display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {suggestions.map((suggestion) => <button key={suggestion} type="button" className="filter-button" disabled={sending} onClick={() => sendCommand(suggestion)}>{suggestion}</button>)}
+        </div>
+
+        <form onSubmit={(event) => { event.preventDefault(); sendCommand(); }} style={{ padding: "8px 20px 20px", display: "flex", gap: 10 }}>
+          <input value={command} onChange={(event) => setCommand(event.target.value)} disabled={sending} placeholder="Try: pay 3000 to Rahul tomorrow" style={{ flex: 1, minWidth: 0, borderRadius: 14, padding: "13px 14px", background: "rgba(2,6,23,.48)", border: "1px solid rgba(148,163,184,.16)", color: "inherit", outline: "none" }} />
+          <button type="submit" className="primary-action" disabled={sending || !command.trim()} style={{ minWidth: 120 }}>{sending ? <RefreshCw size={15} className="spin" /> : <Send size={15} />}{sending ? "Processing..." : "Send"}</button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+/* =========================================================
+   PAYMENTS PAGE
+   ========================================================= */
+
+function PaymentsPage({
+  payments,
+  ledger,
+  onSelectEvent,
+  onRefresh,
+}) {
+  const [mode, setMode] = useState("regular");
+  const [serverSettings, setServerSettings] = useState({
+    max_transaction_amount: 5000,
+    daily_limit: 15000,
+    approval_threshold: 3000,
+  });
+  const [settingsLoading, setSettingsLoading] = useState(true);
+
+  const [form, setForm] = useState({
+    agent_id: "DEMO-PAY-001",
+    session_id: `PAYMENT-${Date.now()}`,
+    intent_id: `UI-PAYMENT-${Date.now()}`,
+    recipient: "Rahul",
+    amount: "1000",
+    intended_amount: "1000",
+    intended_recipient: "Rahul",
+    max_transaction_amount: "5000",
+    daily_limit: "15000",
+    category: "personal_transfer",
+  });
+
+  const [result, setResult] =
+    useState(null);
+
+  const [processing, setProcessing] =
+    useState(false);
+
+  const [checkoutLoading, setCheckoutLoading] =
+    useState(false);
+
+  const [message, setMessage] =
+    useState("");
+
+  const [error, setError] =
+    useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPaymentSettings() {
+      setSettingsLoading(true);
+      try {
+        const response = await fetch(`${API_URL}/settings`);
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Unable to load payment limits.");
+        }
+        if (!cancelled) {
+          const current = data.settings || {};
+          setServerSettings({
+            max_transaction_amount: Number(current.max_transaction_amount ?? 5000),
+            daily_limit: Number(current.daily_limit ?? 15000),
+            approval_threshold: Number(current.approval_threshold ?? 3000),
+          });
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        if (!cancelled) setSettingsLoading(false);
+      }
+    }
+
+    void loadPaymentSettings();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function updateField(name, value) {
+    setForm((current) => ({
+      ...current,
+      [name]: value,
+    }));
+  }
+
+  function buildPayload() {
+    return {
+      intent_id:
+        form.intent_id.trim(),
+
+      agent_id:
+        form.agent_id.trim(),
+
+      session_id:
+        form.session_id.trim(),
+
+      recipient:
+        form.recipient.trim(),
+
+      amount:
+        Number(form.amount),
+
+      currency:
+        "INR",
+
+      intended_amount:
+        mode === "regular"
+          ? Number(form.amount)
+          : Number(form.intended_amount),
+
+      intended_recipient:
+        mode === "regular"
+          ? form.recipient.trim()
+          : form.intended_recipient.trim(),
+
+      max_transaction_amount:
+        mode === "regular"
+          ? Number(serverSettings.max_transaction_amount)
+          : Number(form.max_transaction_amount),
+
+      daily_limit:
+        mode === "regular"
+          ? Number(serverSettings.daily_limit)
+          : Number(form.daily_limit),
+
+      amount_spent_today:
+        0,
+
+      previous_payment_same_request:
+        false,
+
+      merchant:
+        form.recipient.trim(),
+
+      category:
+        form.category,
+
+      merchant_known:
+        true,
+
+      unusual:
+        false,
+    };
+  }
+
+  async function loadRazorpayScript() {
+    if (window.Razorpay) {
+      return true;
+    }
+
+    return new Promise((resolve) => {
+      const existing =
+        document.querySelector(
+          'script[src="https://checkout.razorpay.com/v1/checkout.js"]'
+        );
+
+      if (existing) {
+        existing.addEventListener(
+          "load",
+          () => resolve(true),
+          { once: true }
+        );
+
+        existing.addEventListener(
+          "error",
+          () => resolve(false),
+          { once: true }
+        );
+
+        return;
+      }
+
+      const script =
+        document.createElement("script");
+
+      script.src =
+        "https://checkout.razorpay.com/v1/checkout.js";
+
+      script.async = true;
+
+      script.onload = () =>
+        resolve(true);
+
+      script.onerror = () =>
+        resolve(false);
+
+      document.body.appendChild(
+        script
+      );
+    });
+  }
+
+  async function openRazorpayCheckout(
+    paymentResult = result
+  ) {
+    if (
+      !paymentResult?.order_id
+    ) {
+      setError(
+        "No Razorpay order is available for checkout."
+      );
+
+      return;
+    }
+
+    const keyId =
+      import.meta.env
+        .VITE_RAZORPAY_KEY_ID;
+
+    if (!keyId) {
+      setError(
+        "Razorpay Test Key ID is missing. Add VITE_RAZORPAY_KEY_ID to frontend/.env."
+      );
+
+      return;
+    }
+
+    setCheckoutLoading(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const loaded =
+        await loadRazorpayScript();
+
+      if (!loaded) {
+        throw new Error(
+          "Unable to load Razorpay Checkout."
+        );
+      }
+
+      const options = {
+        key: keyId,
+
+        amount:
+          Number(
+            paymentResult.amount ??
+              Number(form.amount) *
+                100
+          ),
+
+        currency:
+          paymentResult.currency ||
+          "INR",
+
+        name:
+          "AgentShield",
+
+        description:
+          "AgentShield protected payment",
+
+        order_id:
+          paymentResult.order_id,
+
+        prefill: {
+          name:
+            form.recipient,
+        },
+
+        notes: {
+          agent_id:
+            form.agent_id,
+
+          session_id:
+            form.session_id,
+
+          intent_id:
+            form.intent_id,
+
+          approval_id:
+            paymentResult.approval_id ||
+            "",
+        },
+
+        theme: {
+          color:
+            "#66dcff",
+        },
+
+        handler:
+          async function (
+            response
+          ) {
+            await verifyPayment(
+              response
+            );
+          },
+
+        modal: {
+          ondismiss:
+            function () {
+              setCheckoutLoading(
+                false
+              );
+
+              setMessage(
+                "Razorpay Checkout was closed."
+              );
+            },
+        },
+      };
+
+      const razorpay =
+        new window.Razorpay(
+          options
+        );
+
+      razorpay.on(
+        "payment.failed",
+        function (response) {
+          setCheckoutLoading(
+            false
+          );
+
+          setError(
+            response?.error
+              ?.description ||
+              "Razorpay payment failed."
+          );
+        }
+      );
+
+      razorpay.open();
+    } catch (err) {
+      console.error(err);
+
+      setCheckoutLoading(false);
+
+      setError(
+        err.message ||
+          "Unable to open Razorpay Checkout."
+      );
+    }
+  }
+
+  async function verifyPayment(
+    response
+  ) {
+    setCheckoutLoading(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const verifyResponse =
+        await fetch(
+          `${API_URL}/razorpay/verify-payment`,
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body: JSON.stringify({
+              razorpay_order_id:
+                response.razorpay_order_id,
+
+              razorpay_payment_id:
+                response.razorpay_payment_id,
+
+              razorpay_signature:
+                response.razorpay_signature,
+            }),
+          }
+        );
+
+      const data =
+        await verifyResponse.json();
+
+      if (!verifyResponse.ok) {
+        throw new Error(
+          data.detail ||
+            "Payment verification failed."
+        );
+      }
+
+      setResult((current) => ({
+        ...(current || {}),
+        payment_verified:
+          true,
+
+        razorpay_payment_id:
+          response.razorpay_payment_id,
+
+        verification:
+          data,
+      }));
+
+      setMessage(
+        "Payment completed and verified successfully."
+      );
+
+      onRefresh();
+    } catch (err) {
+      console.error(err);
+
+      setError(
+        err.message ||
+          "Unable to verify payment."
+      );
+    } finally {
+      setCheckoutLoading(
+        false
+      );
+    }
+  }
+
+  async function submitPayment() {
+    setProcessing(true);
+    setResult(null);
+    setMessage("");
+    setError("");
+
+    try {
+      const payload =
+        buildPayload();
+
+      if (
+        !payload.agent_id ||
+        !payload.session_id ||
+        !payload.intent_id ||
+        !payload.recipient
+      ) {
+        throw new Error(
+          "Agent, session, intent, and recipient are required."
+        );
+      }
+
+      if (
+        !Number.isFinite(
+          payload.amount
+        ) ||
+        payload.amount <= 0
+      ) {
+        throw new Error(
+          "Enter a valid payment amount."
+        );
+      }
+
+      if (
+        !Number.isFinite(
+          payload.intended_amount
+        ) ||
+        payload.intended_amount <= 0
+      ) {
+        throw new Error(
+          "Enter a valid authorized amount."
+        );
+      }
+
+      const idempotencyKey =
+        `UI-PAYMENT-${payload.intent_id}`;
+
+      const response =
+        await fetch(
+          `${API_URL}/agent/create-payment`,
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+
+              "Idempotency-Key":
+                idempotencyKey,
+            },
+
+            body:
+              JSON.stringify(
+                payload
+              ),
+          }
+        );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            "Payment request failed."
+        );
+      }
+
+      setResult(data);
+
+      if (
+        data.decision ===
+        "ALLOW"
+      ) {
+        setMessage(
+          data.order_id
+            ? "AgentShield approved the payment. Opening Razorpay Checkout..."
+            : "AgentShield approved the payment."
+        );
+
+        onRefresh();
+
+        if (data.order_id) {
+          await openRazorpayCheckout(data);
+        }
+      } else if (
+        data.decision ===
+        "REVIEW"
+      ) {
+        setMessage(
+          "AgentShield paused the payment for human approval."
+        );
+
+        onRefresh();
+      } else {
+        setMessage(
+          "AgentShield blocked the payment before money movement."
+        );
+      }
+    } catch (err) {
+      console.error(err);
+
+      setError(
+        err.message ||
+          "Unable to process payment."
+      );
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  function startNewPayment() {
+    const timestamp =
+      Date.now();
+
+    setForm({
+      agent_id:
+        "DEMO-PAY-001",
+
+      session_id:
+        `PAYMENT-${timestamp}`,
+
+      intent_id:
+        `UI-PAYMENT-${timestamp}`,
+
+      recipient:
+        "Rahul",
+
+      amount:
+        "1000",
+
+      intended_amount:
+        "1000",
+
+      intended_recipient:
+        "Rahul",
+
+      max_transaction_amount:
+        String(serverSettings.max_transaction_amount),
+
+      daily_limit:
+        String(serverSettings.daily_limit),
+
+      category:
+        "personal_transfer",
+    });
+
+    setResult(null);
+    setMessage("");
+    setError("");
+    setCheckoutLoading(false);
+  }
+
+  return (
+    <div className="page-stack">
+
+      <section className="page-intro">
+
+        <div className="section-kicker">
+          <CreditCard size={13} />
+          PROTECTED PAYMENT GATEWAY
+        </div>
+
+        <h1>
+          Payment control center
+        </h1>
+
+        <p>
+          Submit one payment request.
+          AgentShield evaluates intent,
+          policy, risk, and behavior before
+          money can move.
+        </p>
+
+      </section>
+
+      <section className="glass-panel" style={{ padding: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+          <button
+            type="button"
+            className={clsx(
+              "filter-button",
+              mode === "regular" && "filter-button-active"
+            )}
+            onClick={() => {
+              setMode("regular");
+              setResult(null);
+              setMessage("");
+              setError("");
+            }}
+          >
+            <CreditCard size={14} />
+            Regular Payment
+          </button>
+
+          <button
+            type="button"
+            className={clsx(
+              "filter-button",
+              mode === "security" && "filter-button-active"
+            )}
+            onClick={() => {
+              setMode("security");
+              setResult(null);
+              setMessage("");
+              setError("");
+            }}
+          >
+            <ShieldAlert size={14} />
+            Security Test
+          </button>
+        </div>
+      </section>
+
+      <section className="glass-panel" style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div className="panel-eyebrow">SERVER SECURITY POLICY</div>
+          <div style={{ marginTop: 5, fontSize: 12, opacity: 0.68 }}>
+            Regular payments use these server-side limits automatically.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", fontSize: 12 }}>
+          <span><strong>Transaction</strong> {settingsLoading ? "…" : formatINR(serverSettings.max_transaction_amount)}</span>
+          <span><strong>Daily</strong> {settingsLoading ? "…" : formatINR(serverSettings.daily_limit)}</span>
+          <span><strong>Approval</strong> {settingsLoading ? "…" : `Above ${formatINR(serverSettings.approval_threshold)}`}</span>
+        </div>
+      </section>
+
+      {message && (
+        <motion.div
+          className={clsx(
+            "glass-alert",
+            result?.decision ===
+              "BLOCK"
+              ? "error-alert"
+              : result?.decision ===
+                "REVIEW"
+              ? "review-alert"
+              : "success-alert"
+          )}
+          initial={{
+            opacity: 0,
+            y: -5,
+          }}
+          animate={{
+            opacity: 1,
+            y: 0,
+          }}
+        >
+          {result?.decision ===
+          "BLOCK" ? (
+            <Ban size={15} />
+          ) : result?.decision ===
+            "REVIEW" ? (
+            <Clock3 size={15} />
+          ) : (
+            <CheckCircle2
+              size={15}
+            />
+          )}
+
+          <span>
+            {message}
+          </span>
+
+          <button
+            type="button"
+            onClick={() =>
+              setMessage("")
+            }
+          >
+            <X size={14} />
+          </button>
+        </motion.div>
+      )}
+
+      {error && (
+        <motion.div
+          className="glass-alert error-alert"
+          initial={{
+            opacity: 0,
+            y: -5,
+          }}
+          animate={{
+            opacity: 1,
+            y: 0,
+          }}
+        >
+          <AlertTriangle
+            size={15}
+          />
+
+          <span>
+            {error}
+          </span>
+
+          <button
+            type="button"
+            onClick={() =>
+              setError("")
+            }
+          >
+            <X size={14} />
+          </button>
+        </motion.div>
+      )}
+
+      <section className="payment-workspace">
+
+        <div className="glass-panel payment-form-panel">
+
+          <PanelHeader
+            eyebrow="AGENT REQUEST"
+            title="Protected payment"
+            right={
+              <span className="live-label">
+                <span />
+                SECURITY GATEWAY
+              </span>
+            }
+          />
+
+          <div className="payment-form">
+
+            <div className="amount-input-shell">
+
+              <label>
+                PAYMENT AMOUNT
+              </label>
+
+              <div className="amount-input-wrap">
+
+                <span>
+                  ₹
+                </span>
+
+                <input
+                  type="number"
+                  min="1"
+                  value={
+                    form.amount
+                  }
+                  disabled={
+                    Boolean(result)
+                  }
+                  onChange={(event) =>
+                    updateField(
+                      "amount",
+                      event.target.value
+                    )
+                  }
+                />
+
+              </div>
+
+            </div>
+
+            <FormField
+              label="RECIPIENT"
+              value={
+                form.recipient
+              }
+              disabled={
+                Boolean(result)
+              }
+              onChange={(value) =>
+                updateField(
+                  "recipient",
+                  value
+                )
+              }
+            />
+
+            {mode === "regular" && (
+              <div style={{ marginTop: -6, fontSize: 11, opacity: 0.58 }}>
+                Authorization matches this payment automatically in Regular Payment mode.
+              </div>
+            )}
+
+            {mode === "security" && (
+              <>
+                <FormField
+                  label="AUTHORIZED AMOUNT"
+                  type="number"
+                  value={
+                    form.intended_amount
+                  }
+                  disabled={
+                    Boolean(result)
+                  }
+                  onChange={(value) =>
+                    updateField(
+                      "intended_amount",
+                      value
+                    )
+                  }
+                />
+
+                <FormField
+                  label="AUTHORIZED RECIPIENT"
+                  value={
+                    form.intended_recipient
+                  }
+                  disabled={
+                    Boolean(result)
+                  }
+                  onChange={(value) =>
+                    updateField(
+                      "intended_recipient",
+                      value
+                    )
+                  }
+                />
+
+                <div className="form-two-column">
+
+                  <FormField
+                    label="TX LIMIT"
+                    type="number"
+                    value={
+                      form.max_transaction_amount
+                    }
+                    disabled={
+                      Boolean(result)
+                    }
+                    onChange={(value) =>
+                      updateField(
+                        "max_transaction_amount",
+                        value
+                      )
+                    }
+                  />
+
+                  <FormField
+                    label="DAILY LIMIT"
+                    type="number"
+                    value={
+                      form.daily_limit
+                    }
+                    disabled={
+                      Boolean(result)
+                    }
+                    onChange={(value) =>
+                      updateField(
+                        "daily_limit",
+                        value
+                      )
+                    }
+                  />
+
+                </div>
+              </>
+            )}
+
+            {mode === "security" && (
+              <div className="form-two-column">
+
+              <FormField
+                label="AGENT ID"
+                value={
+                  form.agent_id
+                }
+                disabled={
+                  Boolean(result)
+                }
+                onChange={(value) =>
+                  updateField(
+                    "agent_id",
+                    value
+                  )
+                }
+              />
+
+              <FormField
+                label="SESSION"
+                value={
+                  form.session_id
+                }
+                disabled={
+                  Boolean(result)
+                }
+                onChange={(value) =>
+                  updateField(
+                    "session_id",
+                    value
+                  )
+                }
+              />
+
+              </div>
+            )}
+
+            <div className="form-field">
+
+              <label>
+                CATEGORY
+              </label>
+
+              <select
+                value={
+                  form.category
+                }
+                disabled={
+                  Boolean(result)
+                }
+                onChange={(event) =>
+                  updateField(
+                    "category",
+                    event.target.value
+                  )
+                }
+              >
+
+                <option value="personal_transfer">
+                  Personal Transfer
+                </option>
+
+                <option value="food">
+                  Food
+                </option>
+
+                <option value="shopping">
+                  Shopping
+                </option>
+
+                <option value="subscription">
+                  Subscription
+                </option>
+
+                <option value="travel">
+                  Travel
+                </option>
+
+              </select>
+
+            </div>
+
+            {mode === "security" && (
+              <FormField
+              label="INTENT ID"
+              value={
+                form.intent_id
+              }
+              disabled={
+                Boolean(result)
+              }
+              onChange={(value) =>
+                updateField(
+                  "intent_id",
+                  value
+                )
+              }
+              />
+            )}
+
+            {mode === "security" && (
+              <div style={{ padding: "11px 12px", borderRadius: 12, background: "rgba(248,113,113,.06)", border: "1px solid rgba(248,113,113,.14)", fontSize: 11, lineHeight: 1.5, opacity: 0.76 }}>
+                Security Test exposes the authorization controls so you can deliberately simulate amount or recipient manipulation.
+              </div>
+            )}
+
+            {!result ? (
+              <button
+                type="button"
+                className="primary-action payment-submit-button"
+                disabled={processing}
+                onClick={
+                  submitPayment
+                }
+              >
+                {processing ? (
+                  <>
+                    <RefreshCw
+                      size={15}
+                      className="spin"
+                    />
+
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck
+                      size={15}
+                    />
+
+                    Evaluate & Protect Payment
+
+                    <ArrowUpRight
+                      size={14}
+                    />
+                  </>
+                )}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="secondary-action payment-submit-button"
+                onClick={
+                  startNewPayment
+                }
+              >
+                <RefreshCw size={14} />
+
+                Start New Payment
+              </button>
+            )}
+
+          </div>
+
+        </div>
+
+        <PaymentDecision
+          result={result}
+          onCheckout={() =>
+            openRazorpayCheckout(
+              result
+            )
+          }
+          checkoutLoading={
+            checkoutLoading
+          }
+        />
+
+      </section>
+
+      <section className="glass-panel">
+
+        <PanelHeader
+          eyebrow="PERSISTENT PAYMENT LEDGER"
+          title="Recent payment records"
+        />
+
+        {payments.length ===
+        0 ? (
+          <EmptyState
+            icon={Wallet}
+            title="No payment records yet"
+            text="Allowed transactions appear here after a Razorpay order is created."
+          />
+        ) : (
+          <div className="data-table-wrap">
+
+            <table className="data-table">
+
+              <thead>
+                <tr>
+                  <th>ORDER</th>
+                  <th>AMOUNT</th>
+                  <th>STATUS</th>
+                  <th>AGENT</th>
+                  <th>INTENT</th>
+                  <th>TIME</th>
+                </tr>
+              </thead>
+
+              <tbody>
+
+                {payments
+                  .slice(0, 15)
+                  .map(
+                    (payment) => (
+                      <tr
+                        key={
+                          payment.order_id
+                        }
+                      >
+                        <td>
+                          <span className="mono">
+                            {
+                              payment.order_id
+                            }
+                          </span>
+                        </td>
+
+                        <td>
+                          <strong>
+                            {formatRazorpayAmount(
+                              payment.amount
+                            )}
+                          </strong>
+                        </td>
+
+                        <td>
+                          <span
+                            className={clsx(
+                              "status-pill",
+                              statusClass(
+                                payment.status
+                              )
+                            )}
+                          >
+                            {
+                              payment.status
+                            }
+                          </span>
+                        </td>
+
+                        <td>
+                          {
+                            payment.agent_id ||
+                            "--"
+                          }
+                        </td>
+
+                        <td>
+                          {
+                            payment.intent_id ||
+                            "--"
+                          }
+                        </td>
+
+                        <td>
+                          {formatTime(
+                            payment.received_at
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  )}
+
+              </tbody>
+
+            </table>
+
+          </div>
+        )}
+
+      </section>
+
+      <section className="glass-panel">
+
+        <PanelHeader
+          eyebrow="PAYMENT SECURITY TRAIL"
+          title="Related audit events"
+        />
+
+        <div className="event-table">
+
+          {ledger
+            .filter(
+              (event) =>
+                event.event_type?.includes(
+                  "PAYMENT"
+                ) ||
+                event.event_type?.includes(
+                  "RAZORPAY"
+                )
+            )
+            .slice()
+            .reverse()
+            .slice(0, 8)
+            .map(
+              (event) => (
+                <EventRow
+                  key={
+                    event.event_id
+                  }
+                  event={event}
+                  onSelect={
+                    onSelectEvent
+                  }
+                />
+              )
+            )}
+
+        </div>
+
+      </section>
+
+    </div>
+  );
+}
+
+function FormField({
+  label,
+  value,
+  onChange,
+  type = "text",
+  disabled = false,
+}) {
+  return (
+    <div className="form-field">
+      <label>{label}</label>
+
+      <input
+        type={type}
+        value={value}
+        disabled={disabled}
+        onChange={(event) =>
+          onChange(event.target.value)
+        }
+      />
+    </div>
+  );
+}
+
+function PaymentDecision({
+  result,
+  onCheckout,
+  checkoutLoading,
+}) {
+  return (
+    <div className="glass-panel payment-decision-panel">
+      <PanelHeader
+        eyebrow="AGENTSHIELD DECISION"
+        title="Security result"
+      />
+
+      {!result ? (
+        <div className="decision-empty">
+          <div className="decision-empty-icon">
+            <Shield size={29} />
+          </div>
+
+          <strong>
+            Awaiting payment request
+          </strong>
+
+          <span>
+            Configure the payment and run the
+            AgentShield protected payment flow.
+          </span>
+        </div>
+      ) : (
+        <div className="decision-result">
+
+          <div
+            className={clsx(
+              "decision-status",
+              statusClass(result.decision)
+            )}
+          >
+            {result.decision === "ALLOW" ? (
+              <CheckCircle2 size={24} />
+            ) : result.decision === "REVIEW" ? (
+              <Clock3 size={24} />
+            ) : (
+              <Ban size={24} />
+            )}
+
+            <div>
+              <span>
+                SECURITY DECISION
+              </span>
+
+              <strong>
+                {result.decision}
+              </strong>
+            </div>
+          </div>
+
+          <div className="decision-score">
+            <div>
+              <span>
+                RISK SCORE
+              </span>
+
+              <strong>
+                {result.risk_score ?? "—"}
+                <small>/100</small>
+              </strong>
+            </div>
+
+            <div className="decision-score-bar">
+              <span
+                style={{
+                  width: `${Math.min(
+                    Number(
+                      result.risk_score ?? 0
+                    ),
+                    100
+                  )}%`,
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="decision-checks">
+
+            <DecisionCheck
+              label="Intent validation"
+              value={
+                result.intent_match === true
+                  ? "MATCH"
+                  : result.intent_match === false
+                  ? "MISMATCH"
+                  : result.decision === "ALLOW"
+                  ? "MATCH"
+                  : "—"
+              }
+              good={
+                result.intent_match === true ||
+                (
+                  result.intent_match === undefined &&
+                  result.decision === "ALLOW"
+                )
+              }
+            />
+
+            <DecisionCheck
+              label="Authorization"
+              value={
+                result.authorization_valid === true
+                  ? "VALID"
+                  : result.authorization_valid === false
+                  ? "EXCEEDED"
+                  : result.decision === "ALLOW"
+                  ? "VALID"
+                  : "—"
+              }
+              good={
+                result.authorization_valid === true ||
+                (
+                  result.authorization_valid === undefined &&
+                  result.decision === "ALLOW"
+                )
+              }
+            />
+
+            <DecisionCheck
+              label="Behavior"
+              value={
+                result.agent_behavior_level ||
+                "LOW"
+              }
+              good={
+                result.agent_behavior_level !==
+                "HIGH"
+              }
+            />
+
+            <DecisionCheck
+              label="Remaining daily limit"
+              value={
+                result.remaining_daily_limit !==
+                  undefined &&
+                result.remaining_daily_limit !==
+                  null
+                  ? formatINR(
+                      result.remaining_daily_limit
+                    )
+                  : "—"
+              }
+              good
+            />
+
+          </div>
+
+          <div className="decision-reasons">
+            <span>
+              SECURITY REASONS
+            </span>
+
+            {safeArray(
+              result.reasons
+            ).length === 0 ? (
+              <div>
+                <ShieldCheck size={12} />
+
+                <span>
+                  No additional security warnings
+                  were returned.
+                </span>
+              </div>
+            ) : (
+              safeArray(
+                result.reasons
+              ).map(
+                (reason, index) => (
+                  <div key={index}>
+                    <AlertTriangle
+                      size={12}
+                    />
+
+                    <span>
+                      {reason}
+                    </span>
+                  </div>
+                )
+              )
+            )}
+          </div>
+
+          {result.decision === "ALLOW" &&
+            result.order_id && (
+              <div className="order-created-card">
+
+                <div className="order-card-main">
+
+                  <ShieldCheck
+                    size={17}
+                  />
+
+                  <div>
+                    <strong>
+                      Razorpay order created
+                    </strong>
+
+                    <span>
+                      {result.order_id}
+                    </span>
+                  </div>
+
+                </div>
+
+                {result.payment_verified ? (
+                  <div className="payment-verified-card">
+                    <CheckCircle2 size={16} />
+
+                    <div>
+                      <strong>
+                        Payment verified
+                      </strong>
+
+                      {result.razorpay_payment_id && (
+                        <span>
+                          {
+                            result.razorpay_payment_id
+                          }
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="create-order-button"
+                    disabled={checkoutLoading}
+                    onClick={onCheckout}
+                  >
+                    {checkoutLoading ? (
+                      <RefreshCw
+                        size={15}
+                        className="spin"
+                      />
+                    ) : (
+                      <CreditCard
+                        size={15}
+                      />
+                    )}
+
+                    {checkoutLoading
+                      ? "Opening Checkout..."
+                      : "Pay with Razorpay"}
+
+                    <ArrowUpRight
+                      size={14}
+                    />
+                  </button>
+                )}
+
+                {!result.payment_verified && (
+                  <span className="status-pill status-success">
+                    READY
+                  </span>
+                )}
+
+              </div>
+            )}
+
+          {result.decision === "REVIEW" &&
+            result.approval_id && (
+              <div className="approval-created-card">
+
+                <div>
+                  <Clock3 size={17} />
+
+                  <div>
+                    <strong>
+                      Human approval required
+                    </strong>
+
+                    <span>
+                      {
+                        result.approval_id
+                      }
+                    </span>
+                  </div>
+                </div>
+
+                <span className="status-pill status-warning">
+                  REVIEW
+                </span>
+
+              </div>
+            )}
+
+          {result.decision === "BLOCK" && (
+            <div className="decision-stop">
+              <LockKeyhole
+                size={15}
+              />
+
+              <span>
+                AgentShield blocked the payment
+                before money movement.
+              </span>
+            </div>
+          )}
+
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================
+   DECISION CHECK
+   ========================================================= */
+
+function DecisionCheck({
+  label,
+  value,
+  good,
+}) {
+  return (
+    <div className="decision-check">
+
+      <div className="decision-check-label">
+
+        <span
+          className={clsx(
+            "decision-check-dot",
+            good
+              ? "decision-good"
+              : "decision-bad"
+          )}
+        />
+
+        <span>
+          {label}
+        </span>
+
+      </div>
+
+      <strong>
+        {value}
+      </strong>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   SCHEDULED PAYMENTS PAGE
+   ========================================================= */
+
+function ScheduledPaymentsPage({
+  scheduledPayments,
+  approvals,
+  onRefresh,
+  onNavigate,
+}) {
+  const pendingScheduled = scheduledPayments.filter(
+    (item) => item.status === "AWAITING_APPROVAL"
+  );
+
+  const activeScheduled = scheduledPayments.filter(
+    (item) =>
+      !["CANCELLED", "FAILED"].includes(
+        String(item.status || "").toUpperCase()
+      )
+  );
+
+  return (
+    <div className="page-stack">
+
+      <section className="page-intro">
+
+        <div className="section-kicker">
+          <CalendarClock size={13} />
+          AUTOMATED PAYMENT CONTROL
+        </div>
+
+        <h1>
+          Scheduled payments
+        </h1>
+
+        <p>
+          Every scheduled transaction is
+          persisted and re-evaluated by
+          AgentShield when its execution time
+          arrives. Sensitive schedules pause
+          for human approval instead of moving
+          money automatically.
+        </p>
+
+      </section>
+
+      {pendingScheduled.length > 0 && (
+        <section className="glass-alert">
+          <ShieldAlert size={15} />
+          <span>
+            {pendingScheduled.length} scheduled payment{pendingScheduled.length === 1 ? "" : "s"}
+            {" "}awaiting human approval.
+          </span>
+          <button
+            type="button"
+            className="button button-small"
+            onClick={() => onNavigate("approvals")}
+          >
+            Open approvals
+            <ArrowUpRight size={14} />
+          </button>
+        </section>
+      )}
+
+      <section className="metric-grid">
+        <MetricCard
+          label="Scheduled"
+          value={activeScheduled.length}
+          icon={CalendarClock}
+          tone="cyan"
+          subtitle="Persisted schedules"
+        />
+        <MetricCard
+          label="Awaiting approval"
+          value={pendingScheduled.length}
+          icon={Users}
+          tone="amber"
+          subtitle="Human action required"
+        />
+        <MetricCard
+          label="Completed"
+          value={scheduledPayments.filter((item) => item.status === "COMPLETED").length}
+          icon={CheckCircle2}
+          tone="green"
+          subtitle="Razorpay order created"
+        />
+        <MetricCard
+          label="Blocked"
+          value={scheduledPayments.filter((item) => item.decision === "BLOCK").length}
+          icon={Ban}
+          tone="red"
+          subtitle="Security prevented execution"
+        />
+      </section>
+
+      <section className="glass-panel">
+
+        <PanelHeader
+          eyebrow="EXECUTION QUEUE"
+          title="Scheduled transaction timeline"
+          right={
+            <button
+              type="button"
+              className="refresh-button"
+              onClick={() => onRefresh()}
+            >
+              <RefreshCw size={14} />
+              Refresh
+            </button>
+          }
+        />
+
+        {scheduledPayments.length === 0 ? (
+          <EmptyState
+            icon={CalendarClock}
+            title="No scheduled payments"
+            text="Use the AI Payment Agent to schedule a one-time or recurring payment."
+          />
+        ) : (
+          <div className="event-list">
+            {scheduledPayments.map((item) => (
+              <div
+                className="event-row"
+                key={item.schedule_id}
+              >
+                <div className="event-row-icon">
+                  <CalendarClock size={16} />
+                </div>
+
+                <div className="event-main">
+                  <div className="event-title-row">
+                    <strong>
+                      {item.recipient || "Unknown recipient"}
+                    </strong>
+                    <span className={clsx("status-chip", statusClass(item.status))}>
+                      {item.status || "UNKNOWN"}
+                    </span>
+                  </div>
+
+                  <div className="event-message">
+                    {formatINR(item.amount)} · {item.currency || "INR"}
+                    {" · "}
+                    {item.decision || "SCHEDULED"}
+                  </div>
+
+                  <div className="event-meta">
+                    <span>
+                      <Clock3 size={12} />
+                      {formatDateTime(item.scheduled_at)}
+                    </span>
+                    <span>
+                      ID {item.schedule_id}
+                    </span>
+                    {item.approval_id && (
+                      <span>
+                        Approval {item.approval_id}
+                      </span>
+                    )}
+                    {item.order_id && (
+                      <span>
+                        Order {item.order_id}
+                      </span>
+                    )}
+                  </div>
+
+                  {Array.isArray(item.reasons) && item.reasons.length > 0 && (
+                    <div className="event-reasons">
+                      {item.reasons.map((reason, index) => (
+                        <span key={`${item.schedule_id}-${index}`}>
+                          {reason}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+      </section>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   RECURRING SUBSCRIPTIONS PAGE
+   ========================================================= */
+
+function SubscriptionsPage({
+  subscriptions,
+  onRefresh,
+}) {
+  const [busyId, setBusyId] = useState(null);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  const active = subscriptions.filter((item) =>
+    ["AUTHENTICATED", "active", "activated", "created"].includes(String(item.status || "").toLowerCase())
+  );
+
+  async function cancelSubscription(id) {
+    if (!id || busyId) return;
+    setBusyId(id);
+    setError("");
+    setMessage("");
+    try {
+      const response = await fetch(`${API_URL}/subscriptions/${id}/cancel`, {
+        method: "POST",
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Unable to cancel subscription.");
+      setMessage("Recurring subscription cancelled.");
+      onRefresh();
+    } catch (err) {
+      setError(err.message || "Unable to cancel subscription.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="page-stack">
+      <section className="page-intro">
+        <div className="section-kicker">
+          <RefreshCw size={13} />
+          RECURRING PAYMENT CONTROL
+        </div>
+        <h1>Recurring bills</h1>
+        <p>
+          Monthly subscriptions created through AgentShield are listed here with their
+          approval state, Razorpay identifiers, and authorization status.
+        </p>
+      </section>
+
+      {message && (
+        <div className="glass-alert success-alert">
+          <CheckCircle2 size={15} />
+          <span>{message}</span>
+          <button type="button" onClick={() => setMessage("")}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <div className="glass-alert error-alert">
+          <AlertTriangle size={15} />
+          <span>{error}</span>
+          <button type="button" onClick={() => setError("")}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      <section className="metric-grid">
+        <MetricCard
+          label="Subscriptions"
+          value={subscriptions.length}
+          icon={RefreshCw}
+          tone="cyan"
+          subtitle="Persisted recurring requests"
+        />
+        <MetricCard
+          label="Authorized"
+          value={active.length}
+          icon={CheckCircle2}
+          tone="green"
+          subtitle="Razorpay authorization complete"
+        />
+        <MetricCard
+          label="Awaiting approval"
+          value={subscriptions.filter((item) => item.status === "AWAITING_APPROVAL").length}
+          icon={Users}
+          tone="amber"
+          subtitle="Human action required"
+        />
+        <MetricCard
+          label="Cancelled"
+          value={subscriptions.filter((item) => String(item.status || "").toLowerCase().includes("cancel")).length}
+          icon={Ban}
+          tone="red"
+          subtitle="No further recurring charges"
+        />
+      </section>
+
+      <section className="glass-panel">
+        <PanelHeader
+          eyebrow="RECURRING PAYMENT LEDGER"
+          title="Subscription activity"
+          right={
+            <button type="button" className="refresh-button" onClick={() => onRefresh()}>
+              <RefreshCw size={14} />
+              Refresh
+            </button>
+          }
+        />
+
+        {subscriptions.length === 0 ? (
+          <EmptyState
+            icon={RefreshCw}
+            title="No recurring subscriptions"
+            text="Use the AI Payment Agent with a monthly command such as 'pay 1200 to electricity monthly'."
+          />
+        ) : (
+          <div className="event-list">
+            {subscriptions.map((item) => {
+              const isCancelled = String(item.status || "").toLowerCase().includes("cancel");
+              const canCancel = Boolean(item.razorpay_subscription_id) && !isCancelled && item.status !== "AWAITING_APPROVAL";
+              return (
+                <div className="event-row" key={item.subscription_request_id}>
+                  <div className="event-row-icon">
+                    <RefreshCw size={16} />
+                  </div>
+                  <div className="event-main">
+                    <div className="event-title-row">
+                      <strong>{item.recipient || item.name || "Recurring payment"}</strong>
+                      <span className={clsx("status-chip", statusClass(item.status))}>
+                        {item.status || "UNKNOWN"}
+                      </span>
+                    </div>
+                    <div className="event-message">
+                      {formatINR(item.amount)} · {item.currency || "INR"} · {item.period || "monthly"}
+                      {item.interval ? ` every ${item.interval}` : ""}
+                    </div>
+                    <div className="event-meta">
+                      <span>Request {item.subscription_request_id}</span>
+                      {item.approval_id && <span>Approval {item.approval_id}</span>}
+                      {item.plan_id && <span>Plan {item.plan_id}</span>}
+                      {item.razorpay_subscription_id && <span>Subscription {item.razorpay_subscription_id}</span>}
+                      {item.total_count && <span>{item.total_count} cycles</span>}
+                    </div>
+                    {item.last_error && (
+                      <div className="event-reasons">
+                        <span>{item.last_error}</span>
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                      <span className="status-pill status-neutral">
+                        {item.authorization_payment_id ? "AUTH PAYMENT RECORDED" : "AUTHORIZATION PENDING"}
+                      </span>
+                      {canCancel && (
+                        <button
+                          type="button"
+                          className="reject-demo"
+                          disabled={busyId === item.subscription_request_id}
+                          onClick={() => cancelSubscription(item.subscription_request_id)}
+                        >
+                          {busyId === item.subscription_request_id ? <RefreshCw size={14} className="spin" /> : <Ban size={14} />}
+                          Cancel Subscription
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/* =========================================================
+   APPROVAL PAGE
+   ========================================================= */
+
+function ApprovalsPage({
+  approvals,
+  scheduledPayments,
+  onRefresh,
+}) {
+  const [processingId, setProcessingId] =
+    useState(null);
+
+  const [message, setMessage] =
+    useState("");
+
+  const [error, setError] =
+    useState("");
+
+  const [checkoutLoading, setCheckoutLoading] =
+    useState(false);
+
+  async function loadRazorpayScript() {
+    if (window.Razorpay) {
+      return true;
+    }
+
+    return new Promise((resolve) => {
+      const existing =
+        document.querySelector(
+          'script[src="https://checkout.razorpay.com/v1/checkout.js"]'
+        );
+
+      if (existing) {
+        existing.addEventListener(
+          "load",
+          () => resolve(true),
+          { once: true }
+        );
+        existing.addEventListener(
+          "error",
+          () => resolve(false),
+          { once: true }
+        );
+        return;
+      }
+
+      const script =
+        document.createElement("script");
+
+      script.src =
+        "https://checkout.razorpay.com/v1/checkout.js";
+      script.async = true;
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+  }
+
+  async function openApprovedRazorpaySubscriptionCheckout(subscriptionResult) {
+    if (!subscriptionResult?.subscription_id) {
+      throw new Error("Approval succeeded, but no Razorpay subscription was returned.");
+    }
+
+    const keyId = import.meta.env.VITE_RAZORPAY_KEY_ID;
+    if (!keyId) {
+      throw new Error("Razorpay Test Key ID is missing. Add VITE_RAZORPAY_KEY_ID to frontend/.env.");
+    }
+
+    setCheckoutLoading(true);
+    const loaded = await loadRazorpayScript();
+    if (!loaded) {
+      setCheckoutLoading(false);
+      throw new Error("Unable to load Razorpay Checkout.");
+    }
+
+    const razorpay = new window.Razorpay({
+      key: keyId,
+      subscription_id: subscriptionResult.subscription_id,
+      name: "AgentShield",
+      description: "AgentShield approved recurring subscription",
+      prefill: { name: subscriptionResult.recipient || "Customer" },
+      notes: {
+        subscription_request_id: subscriptionResult.subscription_request_id || "",
+        approval_id: subscriptionResult.approval_id || "",
+      },
+      theme: { color: "#66dcff" },
+      handler: async (response) => {
+        try {
+          const verifyResponse = await fetch(`${API_URL}/razorpay/verify-subscription`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              subscription_request_id: subscriptionResult.subscription_request_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_subscription_id: response.razorpay_subscription_id,
+              razorpay_signature: response.razorpay_signature,
+            }),
+          });
+          const data = await verifyResponse.json();
+          if (!verifyResponse.ok) throw new Error(data.detail || "Subscription authorization verification failed.");
+          setMessage("Recurring subscription authorized and Razorpay signature verified successfully.");
+          onRefresh();
+        } catch (err) {
+          setError(err.message || "Unable to verify recurring subscription authorization.");
+        } finally {
+          setCheckoutLoading(false);
+        }
+      },
+      modal: {
+        ondismiss: () => {
+          setCheckoutLoading(false);
+          setMessage("Subscription was approved, but Razorpay Checkout was closed before authorization completed.");
+          onRefresh();
+        },
+      },
+    });
+
+    razorpay.on("payment.failed", (response) => {
+      setCheckoutLoading(false);
+      setError(response?.error?.description || "Razorpay subscription authorization failed.");
+    });
+
+    razorpay.open();
+  }
+
+  async function openApprovedRazorpayCheckout(
+    paymentResult
+  ) {
+    if (!paymentResult?.order_id) {
+      throw new Error(
+        "Approval succeeded, but no Razorpay order was returned."
+      );
+    }
+
+    const keyId =
+      import.meta.env.VITE_RAZORPAY_KEY_ID;
+
+    if (!keyId) {
+      throw new Error(
+        "Razorpay Test Key ID is missing. Add VITE_RAZORPAY_KEY_ID to frontend/.env."
+      );
+    }
+
+    setCheckoutLoading(true);
+
+    const loaded =
+      await loadRazorpayScript();
+
+    if (!loaded) {
+      setCheckoutLoading(false);
+      throw new Error(
+        "Unable to load Razorpay Checkout."
+      );
+    }
+
+    const razorpay =
+      new window.Razorpay({
+        key: keyId,
+        amount: Number(
+          paymentResult.amount || 0
+        ),
+        currency:
+          paymentResult.currency || "INR",
+        name: "AgentShield",
+        description:
+          "AgentShield approved payment",
+        order_id:
+          paymentResult.order_id,
+        prefill: {
+          name:
+            paymentResult.recipient ||
+            "",
+        },
+        notes: {
+          approval_id:
+            paymentResult.approval_id ||
+            "",
+        },
+        handler: async (response) => {
+          try {
+            const verifyResponse =
+              await fetch(
+                `${API_URL}/razorpay/verify-payment`,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type":
+                      "application/json",
+                  },
+                  body: JSON.stringify({
+                    razorpay_order_id:
+                      response.razorpay_order_id,
+                    razorpay_payment_id:
+                      response.razorpay_payment_id,
+                    razorpay_signature:
+                      response.razorpay_signature,
+                  }),
+                }
+              );
+
+            const data =
+              await verifyResponse.json();
+
+            if (!verifyResponse.ok) {
+              throw new Error(
+                data.detail ||
+                  "Payment verification failed."
+              );
+            }
+
+            setMessage(
+              "Payment approved and completed. Razorpay payment verified successfully."
+            );
+            onRefresh();
+          } catch (err) {
+            setError(
+              err.message ||
+                "Unable to verify the Razorpay payment."
+            );
+          } finally {
+            setCheckoutLoading(false);
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setCheckoutLoading(false);
+            setMessage(
+              "Payment was approved, but Razorpay Checkout was closed before completion."
+            );
+            onRefresh();
+          },
+        },
+      });
+
+    razorpay.on(
+      "payment.failed",
+      (response) => {
+        setCheckoutLoading(false);
+        setError(
+          response?.error?.description ||
+            "Razorpay payment failed."
+        );
+        onRefresh();
+      }
+    );
+
+    razorpay.open();
+  }
+
+  async function actionApproval(
+    approvalId,
+    action
+  ) {
+    setProcessingId(
+      approvalId
+    );
+
+    setMessage("");
+    setError("");
+
+    try {
+      const response =
+        await fetch(
+          `${API_URL}/approvals/${approvalId}/${action}`,
+          {
+            method: "POST",
+          }
+        );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            "Approval action failed."
+        );
+      }
+
+      if (action === "approve") {
+        if (data?.subscription?.subscription_id) {
+          setMessage("Recurring subscription approved. Opening Razorpay authorization...");
+          onRefresh();
+          await openApprovedRazorpaySubscriptionCheckout({
+            ...data.subscription,
+            approval_id: approvalId,
+          });
+          return;
+        }
+
+        const isScheduledApproval =
+          scheduledPayments.some(
+            (item) =>
+              item.approval_id ===
+              approvalId
+          );
+
+        if (isScheduledApproval) {
+          setMessage(
+            "Scheduled payment approved. AgentShield will execute it at the scheduled time."
+          );
+          onRefresh();
+          return;
+        }
+
+        setMessage(
+          "Human approval recorded. Creating the protected Razorpay order..."
+        );
+        onRefresh();
+
+        const orderResponse =
+          await fetch(
+            `${API_URL}/approvals/${approvalId}/create-payment`,
+            {
+              method: "POST",
+            }
+          );
+
+        const orderData =
+          await orderResponse.json();
+
+        if (!orderResponse.ok) {
+          throw new Error(
+            orderData.detail ||
+              "Unable to create the approved Razorpay order."
+          );
+        }
+
+        setMessage(
+          "Payment approved. Opening Razorpay Checkout..."
+        );
+
+        await openApprovedRazorpayCheckout(
+          orderData
+        );
+      } else {
+        setMessage(
+          "Payment rejected successfully."
+        );
+        onRefresh();
+      }
+    } catch (err) {
+      setError(
+        err.message ||
+          "Approval action failed."
+      );
+    } finally {
+      setProcessingId(null);
+    }
+  }
+
+  return (
+    <div className="page-stack">
+
+      <section className="page-intro">
+
+        <div className="section-kicker">
+          <Users size={13} />
+          HUMAN-IN-THE-LOOP SECURITY
+        </div>
+
+        <h1>
+          Approval center
+        </h1>
+
+        <p>
+          Sensitive payment requests stop
+          until a human explicitly authorizes
+          the transaction.
+        </p>
+
+      </section>
+
+      {message && (
+        <div className="glass-alert success-alert">
+
+          <CheckCircle2
+            size={15}
+          />
+
+          <span>
+            {message}
+          </span>
+
+          <button
+            type="button"
+            onClick={() =>
+              setMessage("")
+            }
+          >
+            <X size={14} />
+          </button>
+
+        </div>
+      )}
+
+      {error && (
+        <div className="glass-alert error-alert">
+
+          <AlertTriangle
+            size={15}
+          />
+
+          <span>
+            {error}
+          </span>
+
+          <button
+            type="button"
+            onClick={() =>
+              setError("")
+            }
+          >
+            <X size={14} />
+          </button>
+
+        </div>
+      )}
+
+      <section className="glass-panel">
+
+        <PanelHeader
+          eyebrow="PENDING REVIEWS"
+          title="Human approval queue"
+          right={
+            <span className="queue-count-large">
+              {
+                approvals.length
+              }
+            </span>
+          }
+        />
+
+        {approvals.length ===
+        0 ? (
+          <EmptyState
+            icon={CheckCircle2}
+            title="Approval queue is clear"
+            text="No payment requests currently require human intervention."
+          />
+        ) : (
+          <div className="approval-grid">
+
+            {approvals.map(
+              (approval) => {
+
+                const processing =
+                  processingId ===
+                  approval.approval_id;
+
+                return (
+                  <motion.div
+                    key={
+                      approval.approval_id
+                    }
+                    className="approval-glass-card"
+                    whileHover={{
+                      y: -3,
+                    }}
+                  >
+
+                    <div className="approval-card-top">
+
+                      <span className="status-pill status-warning">
+                        HUMAN REVIEW
+                      </span>
+
+                      <span className="approval-risk-score">
+                        Risk{" "}
+                        {
+                          approval.risk_score
+                        }
+                      </span>
+
+                    </div>
+
+                    <div className="approval-amount">
+                      {formatINR(
+                        approval.amount
+                      )}
+                    </div>
+
+                    <div className="approval-recipient">
+                      →
+                      {" "}
+                      {
+                        approval.recipient
+                      }
+                    </div>
+
+                    <div className="approval-meta-grid">
+
+                      <ApprovalMeta
+                        label="AGENT"
+                        value={
+                          approval.agent_id
+                        }
+                      />
+
+                      <ApprovalMeta
+                        label="INTENT"
+                        value={
+                          approval.intent_id
+                        }
+                      />
+
+                      <ApprovalMeta
+                        label="SESSION"
+                        value={
+                          approval.session_id
+                        }
+                      />
+
+                      <ApprovalMeta
+                        label="CREATED"
+                        value={formatDateTime(
+                          approval.created_at
+                        )}
+                      />
+
+                    </div>
+
+                    <div className="approval-reasons">
+
+                      <span>
+                        RISK REASONS
+                      </span>
+
+                      {safeArray(
+                        approval.reasons
+                      ).map(
+                        (
+                          reason,
+                          index
+                        ) => (
+                          <div
+                            key={
+                              index
+                            }
+                          >
+
+                            <AlertTriangle
+                              size={12}
+                            />
+
+                            {reason}
+
+                          </div>
+                        )
+                      )}
+
+                    </div>
+
+                    <div className="approval-demo-actions">
+
+                      <button
+                        type="button"
+                        className="approve-demo"
+                        disabled={
+                          processing
+                        }
+                        onClick={() =>
+                          actionApproval(
+                            approval.approval_id,
+                            "approve"
+                          )
+                        }
+                      >
+
+                        {processing ? (
+                          <RefreshCw
+                            size={14}
+                            className="spin"
+                          />
+                        ) : (
+                          <CheckCircle2
+                            size={14}
+                          />
+                        )}
+
+                        Approve Once
+
+                      </button>
+
+                      <button
+                        type="button"
+                        className="reject-demo"
+                        disabled={
+                          processing
+                        }
+                        onClick={() =>
+                          actionApproval(
+                            approval.approval_id,
+                            "reject"
+                          )
+                        }
+                      >
+
+                        <Ban size={14} />
+
+                        Reject
+
+                      </button>
+
+                    </div>
+
+                  </motion.div>
+                );
+              }
+            )}
+
+          </div>
+        )}
+
+      </section>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   APPROVAL META
+   ========================================================= */
+
+function ApprovalMeta({
+  label,
+  value,
+}) {
+  return (
+    <div>
+
+      <span>
+        {label}
+      </span>
+
+      <strong>
+        {value || "--"}
+      </strong>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   THREAT LAB
+   ========================================================= */
+
+function ThreatPage({
+  ledger,
+  onRun,
+  onSelectEvent,
+}) {
+  const [running, setRunning] =
+    useState(false);
+
+  const [result, setResult] =
+    useState(null);
+
+  async function simulate(type) {
+    setRunning(true);
+    setResult(null);
+
+    const now =
+      Date.now();
+
+    const base = {
+      intent_id:
+        `UI-THREAT-${now}`,
+
+      agent_id:
+        `UI-ATTACK-${now}`,
+
+      session_id:
+        `UI-THREAT-SESSION-${now}`,
+
+      recipient:
+        "Rahul",
+
+      amount:
+        2000,
+
+      currency:
+        "INR",
+
+      intended_amount:
+        2000,
+
+      intended_recipient:
+        "Rahul",
+
+      max_transaction_amount:
+        5000,
+
+      daily_limit:
+        15000,
+
+      amount_spent_today:
+        0,
+
+      previous_payment_same_request:
+        false,
+
+      merchant:
+        "Rahul",
+
+      category:
+        "personal_transfer",
+
+      merchant_known:
+        true,
+
+      unusual:
+        false,
+    };
+
+    try {
+      let payload = {
+        ...base,
+      };
+
+      if (type === "amount") {
+        payload = {
+          ...base,
+
+          intent_id:
+            `UI-AMOUNT-${now}`,
+
+          amount:
+            20000,
+
+          intended_amount:
+            2000,
+        };
+      }
+
+      if (
+        type ===
+        "recipient"
+      ) {
+        payload = {
+          ...base,
+
+          intent_id:
+            `UI-RECIPIENT-${now}`,
+
+          recipient:
+            "Unknown Recipient",
+
+          intended_recipient:
+            "Rahul",
+        };
+      }
+
+      if (
+        type ===
+        "duplicate"
+      ) {
+        payload = {
+          ...base,
+
+          intent_id:
+            `UI-DUPLICATE-${now}`,
+
+          previous_payment_same_request:
+            true,
+        };
+      }
+
+      if (
+        type ===
+        "loop"
+      ) {
+        let latest = null;
+
+        for (
+          let index = 0;
+          index < 4;
+          index += 1
+        ) {
+          const response =
+            await fetch(
+              `${API_URL}/agent/payment-request`,
+              {
+                method:
+                  "POST",
+
+                headers: {
+                  "Content-Type":
+                    "application/json",
+                },
+
+                body:
+                  JSON.stringify({
+                    ...base,
+
+                    intent_id:
+                      `UI-LOOP-${now}-${index}`,
+                  }),
+              }
+            );
+
+          latest =
+            await response.json();
+        }
+
+        setResult(
+          latest
+        );
+
+        onRun();
+
+        return;
+      }
+
+      const response =
+        await fetch(
+          `${API_URL}/agent/payment-request`,
+          {
+            method:
+              "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body:
+              JSON.stringify(
+                payload
+              ),
+          }
+        );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail ||
+            "Threat simulation failed."
+        );
+      }
+
+      setResult(data);
+
+      onRun();
+    } catch (err) {
+      setResult({
+        decision:
+          "ERROR",
+
+        risk_score:
+          100,
+
+        reasons: [
+          err.message ||
+            "Threat simulation failed.",
+        ],
+      });
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const attacks = [
+    {
+      id: "amount",
+      icon: Wallet,
+      title:
+        "Amount Manipulation",
+      text:
+        "Agent changes ₹2,000 into ₹20,000.",
+    },
+
+    {
+      id: "recipient",
+      icon: Users,
+      title:
+        "Recipient Manipulation",
+      text:
+        "Agent changes the authorized recipient.",
+    },
+
+    {
+      id: "duplicate",
+      icon: RefreshCw,
+      title:
+        "Duplicate Payment",
+      text:
+        "Agent replays a payment request.",
+    },
+
+    {
+      id: "loop",
+      icon: Zap,
+      title:
+        "Payment Loop",
+      text:
+        "Agent repeatedly attempts payments.",
+    },
+  ];
+
+  return (
+    <div className="page-stack">
+
+      <section className="page-intro">
+
+        <div className="section-kicker">
+          <ShieldAlert size={13} />
+          ADVERSARIAL TESTING
+        </div>
+
+        <h1>
+          Threat Lab
+        </h1>
+
+        <p>
+          Simulate malicious agent
+          behavior and watch AgentShield
+          evaluate the request.
+        </p>
+
+      </section>
+
+      <section className="threat-grid">
+
+        {attacks.map(
+          (attack) => {
+            const Icon =
+              attack.icon;
+
+            return (
+              <motion.button
+                type="button"
+                key={
+                  attack.id
+                }
+                className="threat-card"
+                disabled={
+                  running
+                }
+                whileHover={{
+                  y: -4,
+                  scale: 1.01,
+                }}
+                onClick={() =>
+                  simulate(
+                    attack.id
+                  )
+                }
+              >
+
+                <div className="threat-card-icon">
+                  <Icon size={20} />
+                </div>
+
+                <div className="threat-card-content">
+
+                  <strong>
+                    {
+                      attack.title
+                    }
+                  </strong>
+
+                  <span>
+                    {
+                      attack.text
+                    }
+                  </span>
+
+                </div>
+
+                <ArrowUpRight
+                  size={16}
+                />
+
+              </motion.button>
+            );
+          }
+        )}
+
+      </section>
+
+      {running && (
+        <div className="glass-alert">
+
+          <RefreshCw
+            size={15}
+            className="spin"
+          />
+
+          Running attack
+          simulation...
+
+        </div>
+      )}
+
+      {result && (
+        <section className="glass-panel">
+
+          <PanelHeader
+            eyebrow="LIVE RESULT"
+            title="AgentShield response"
+          />
+
+          <div
+            className={clsx(
+              "attack-result-banner",
+              statusClass(
+                result.decision
+              )
+            )}
+          >
+
+            {result.decision ===
+            "ALLOW" ? (
+              <CheckCircle2 />
+            ) : result.decision ===
+              "REVIEW" ? (
+              <Clock3 />
+            ) : (
+              <Ban />
+            )}
+
+            <strong>
+              {result.decision}
+            </strong>
+
+            <span>
+              Risk{" "}
+              {
+                result.risk_score ??
+                "--"
+              }
+              /100
+            </span>
+
+          </div>
+
+          <div className="result-reasons">
+
+            {safeArray(
+              result.reasons
+            ).map(
+              (reason, index) => (
+                <div
+                  key={index}
+                >
+                  <AlertTriangle
+                    size={13}
+                  />
+
+                  {reason}
+                </div>
+              )
+            )}
+
+          </div>
+
+        </section>
+      )}
+
+      <section className="glass-panel">
+
+        <PanelHeader
+          eyebrow="RECENT THREAT EVENTS"
+          title="Security response timeline"
+        />
+
+        <div className="event-table">
+
+          {ledger
+            .filter(
+              (event) =>
+                String(
+                  event.intent_id ||
+                    ""
+                ).startsWith(
+                  "UI-"
+                )
+            )
+            .slice()
+            .reverse()
+            .slice(0, 8)
+            .map(
+              (event) => (
+                <EventRow
+                  key={
+                    event.event_id
+                  }
+                  event={event}
+                  onSelect={
+                    onSelectEvent
+                  }
+                />
+              )
+            )}
+
+        </div>
+
+      </section>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   LEDGER PAGE
+   ========================================================= */
+
+function LedgerPage({
+  ledger,
+  selectedEvent,
+  onSelectEvent,
+}) {
+  const [query, setQuery] =
+    useState("");
+
+  const [filter, setFilter] =
+    useState("ALL");
+
+  const filtered =
+    useMemo(() => {
+      const search =
+        query
+          .trim()
+          .toLowerCase();
+
+      return ledger
+        .slice()
+        .reverse()
+        .filter((event) => {
+
+          const decision =
+            decisionFromEvent(
+              event
+            );
+
+          if (
+            filter !==
+              "ALL" &&
+            decision !==
+              filter
+          ) {
+            return false;
+          }
+
+          if (!search) {
+            return true;
+          }
+
+          return (
+            String(
+              event.event_type ||
+                ""
+            )
+              .toLowerCase()
+              .includes(
+                search
+              ) ||
+
+            String(
+              event.message ||
+                ""
+            )
+              .toLowerCase()
+              .includes(
+                search
+              ) ||
+
+            String(
+              event.agent_id ||
+                ""
+            )
+              .toLowerCase()
+              .includes(
+                search
+              ) ||
+
+            String(
+              event.intent_id ||
+                ""
+            )
+              .toLowerCase()
+              .includes(
+                search
+              )
+          );
+        });
+    }, [
+      ledger,
+      query,
+      filter,
+    ]);
+
+  return (
+    <div className="page-stack">
+
+      <section className="page-intro">
+
+        <div className="section-kicker">
+          <FileText size={13} />
+          AUDIT & OBSERVABILITY
+        </div>
+
+        <h1>
+          Action ledger
+        </h1>
+
+        <p>
+          Every important AgentShield
+          action is recorded with
+          its security context.
+        </p>
+
+      </section>
+
+      <section className="glass-panel">
+
+        <div className="ledger-toolbar">
+
+          <div className="search-shell">
+
+            <Search size={15} />
+
+            <input
+              value={query}
+              onChange={(event) =>
+                setQuery(
+                  event.target.value
+                )
+              }
+              placeholder="Search events..."
+            />
+
+          </div>
+
+          <div className="filter-group">
+
+            {[
+              "ALL",
+              "ALLOW",
+              "REVIEW",
+              "BLOCK",
+            ].map(
+              (option) => (
+                <button
+                  type="button"
+                  key={
+                    option
+                  }
+                  className={clsx(
+                    "filter-button",
+                    filter ===
+                      option &&
+                      "filter-button-active"
+                  )}
+                  onClick={() =>
+                    setFilter(
+                      option
+                    )
+                  }
+                >
+                  {option}
+                </button>
+              )
+            )}
+
+          </div>
+
+        </div>
+
+        <div className="event-table">
+
+          {filtered.length ===
+          0 ? (
+            <EmptyState
+              icon={
+                FileText
+              }
+              title="No matching events"
+              text="Try another search or filter."
+            />
+          ) : (
+            filtered.map(
+              (event) => (
+                <button
+                  type="button"
+                  key={
+                    event.event_id
+                  }
+                  className={clsx(
+                    "event-row",
+                    selectedEvent?.event_id ===
+                      event.event_id &&
+                      "event-row-selected"
+                  )}
+                  onClick={() =>
+                    onSelectEvent(
+                      event
+                    )
+                  }
+                >
+
+                  <div className="event-icon">
+                    <Activity
+                      size={14}
+                    />
+                  </div>
+
+                  <div className="event-main">
+
+                    <strong>
+                      {eventLabel(
+                        event.event_type
+                      )}
+                    </strong>
+
+                    <span>
+                      {
+                        event.message
+                      }
+                    </span>
+
+                  </div>
+
+                  <div className="event-agent">
+                    {
+                      event.agent_id
+                    }
+                  </div>
+
+                  <span
+                    className={clsx(
+                      "status-pill",
+                      statusClass(
+                        decisionFromEvent(
+                          event
+                        )
+                      )
+                    )}
+                  >
+                    {decisionFromEvent(
+                      event
+                    ) ||
+                      "EVENT"}
+                  </span>
+
+                  <div className="event-time">
+                    {formatTime(
+                      event.timestamp
+                    )}
+                  </div>
+
+                  <ChevronRight
+                    size={15}
+                    className="event-chevron"
+                  />
+
+                </button>
+              )
+            )
+          )}
+
+        </div>
+
+      </section>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   AGENTS PAGE
+   ========================================================= */
+
+function AgentsPage({
+  ledger,
+}) {
+  const agents =
+    useMemo(() => {
+
+      const map =
+        new Map();
+
+      for (const event of ledger) {
+
+        const name =
+          event.agent_id ||
+          "UNKNOWN";
+
+        if (!map.has(name)) {
+
+          map.set(
+            name,
+            {
+              name,
+              requests: 0,
+              reviews: 0,
+              blocks: 0,
+            }
+          );
+
+        }
+
+        const item =
+          map.get(name);
+
+        if (
+          event.event_type ===
+          "AGENT_REQUEST"
+        ) {
+          item.requests += 1;
+        }
+
+        const decision =
+          decisionFromEvent(
+            event
+          );
+
+        if (
+          decision ===
+          "REVIEW"
+        ) {
+          item.reviews += 1;
+        }
+
+        if (
+          decision ===
+          "BLOCK"
+        ) {
+          item.blocks += 1;
+        }
+
+      }
+
+      return Array.from(
+        map.values()
+      );
+
+    }, [ledger]);
+
+  return (
+    <div className="page-stack">
+
+      <section className="page-intro">
+
+        <div className="section-kicker">
+          <Activity size={13} />
+          AGENT TELEMETRY
+        </div>
+
+        <h1>
+          Monitored agents
+        </h1>
+
+        <p>
+          Observe agent request volume,
+          review patterns, and blocked
+          behavior.
+        </p>
+
+      </section>
+
+      <section className="glass-panel">
+
+        <PanelHeader
+          eyebrow="ACTIVE AGENTS"
+          title="Agent posture"
+        />
+
+        {agents.length ===
+        0 ? (
+          <EmptyState
+            icon={Users}
+            title="No agent activity yet"
+            text="Agent telemetry appears after payment requests are evaluated."
+          />
+        ) : (
+          <div className="agent-grid">
+
+            {agents.map(
+              (agent) => (
+                <motion.div
+                  className="agent-card"
+                  key={
+                    agent.name
+                  }
+                  whileHover={{
+                    y: -3,
+                  }}
+                >
+
+                  <div className="agent-card-header">
+
+                    <div className="agent-avatar">
+                      <Activity
+                        size={18}
+                      />
+                    </div>
+
+                    <span className="agent-live">
+                      ACTIVE
+                    </span>
+
+                  </div>
+
+                  <h3>
+                    {
+                      agent.name
+                    }
+                  </h3>
+
+                  <div className="agent-card-stat">
+
+                    <div>
+                      <span>
+                        REQUESTS
+                      </span>
+
+                      <strong>
+                        {
+                          agent.requests
+                        }
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>
+                        REVIEWS
+                      </span>
+
+                      <strong>
+                        {
+                          agent.reviews
+                        }
+                      </strong>
+                    </div>
+
+                    <div>
+                      <span>
+                        BLOCKS
+                      </span>
+
+                      <strong>
+                        {
+                          agent.blocks
+                        }
+                      </strong>
+                    </div>
+
+                  </div>
+
+                </motion.div>
+              )
+            )}
+
+          </div>
+        )}
+
+      </section>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   SETTINGS
+   ========================================================= */
+
+function SettingsPage() {
+  const [settings, setSettings] = useState({
+    max_transaction_amount: "",
+    daily_limit: "",
+    approval_threshold: "",
+  });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  async function loadSettings() {
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch(`${API_URL}/settings`);
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Unable to load security settings."
+        );
+      }
+
+      const current = data.settings || {};
+      setSettings({
+        max_transaction_amount: String(
+          current.max_transaction_amount ?? ""
+        ),
+        daily_limit: String(current.daily_limit ?? ""),
+        approval_threshold: String(
+          current.approval_threshold ?? ""
+        ),
+      });
+    } catch (err) {
+      console.error(err);
+      setError(
+        err.message || "Unable to load security settings."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  function updateField(name, value) {
+    setSettings((current) => ({
+      ...current,
+      [name]: value,
+    }));
+    setMessage("");
+    setError("");
+  }
+
+  async function saveSettings(event) {
+    event.preventDefault();
+    setSaving(true);
+    setMessage("");
+    setError("");
+
+    const maxTransactionAmount = Number(
+      settings.max_transaction_amount
+    );
+    const dailyLimit = Number(settings.daily_limit);
+    const approvalThreshold = Number(
+      settings.approval_threshold
+    );
+
+    if (
+      !Number.isFinite(maxTransactionAmount) ||
+      maxTransactionAmount <= 0
+    ) {
+      setError("Enter a valid transaction limit.");
+      setSaving(false);
+      return;
+    }
+
+    if (!Number.isFinite(dailyLimit) || dailyLimit <= 0) {
+      setError("Enter a valid daily spending limit.");
+      setSaving(false);
+      return;
+    }
+
+    if (!Number.isFinite(approvalThreshold) || approvalThreshold < 0) {
+      setError("Enter a valid approval threshold.");
+      setSaving(false);
+      return;
+    }
+
+    if (approvalThreshold > maxTransactionAmount) {
+      setError(
+        "Human approval threshold cannot exceed the transaction limit."
+      );
+      setSaving(false);
+      return;
+    }
+
+    if (dailyLimit < maxTransactionAmount) {
+      setError(
+        "Daily spending limit must be at least the transaction limit."
+      );
+      setSaving(false);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/settings`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          max_transaction_amount: maxTransactionAmount,
+          daily_limit: dailyLimit,
+          approval_threshold: approvalThreshold,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Unable to save security settings."
+        );
+      }
+
+      const updated = data.settings || {};
+      setSettings({
+        max_transaction_amount: String(
+          updated.max_transaction_amount ?? maxTransactionAmount
+        ),
+        daily_limit: String(
+          updated.daily_limit ?? dailyLimit
+        ),
+        approval_threshold: String(
+          updated.approval_threshold ?? approvalThreshold
+        ),
+      });
+
+      setMessage(
+        "Security limits updated successfully. New payment requests will use these server-side limits."
+      );
+    } catch (err) {
+      console.error(err);
+      setError(
+        err.message || "Unable to save security settings."
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="page-stack">
+
+      <section className="page-intro">
+
+        <div className="section-kicker">
+          <Settings size={13} />
+          SYSTEM CONFIGURATION
+        </div>
+
+        <h1>
+          Settings
+        </h1>
+
+        <p>
+          Configure AgentShield transaction controls and review thresholds.
+        </p>
+
+      </section>
+
+      {message && (
+        <motion.div
+          className="glass-alert success-alert"
+          initial={{ opacity: 0, y: -5 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
+          <CheckCircle2 size={15} />
+          <span>{message}</span>
+          <button
+            type="button"
+            onClick={() => setMessage("")}
+          >
+            <X size={14} />
+          </button>
+        </motion.div>
+      )}
+
+      {error && (
+        <motion.div
+          className="glass-alert error-alert"
+          initial={{ opacity: 0, y: -5 }}
+          animate={{ opacity: 1, y: 0 }}
+        >
+          <AlertTriangle size={15} />
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => setError("")}
+          >
+            <X size={14} />
+          </button>
+        </motion.div>
+      )}
+
+      <section className="glass-panel settings-grid">
+
+        {loading ? (
+          <div className="decision-empty" style={{ gridColumn: "1 / -1" }}>
+            <div className="decision-empty-icon">
+              <RefreshCw size={24} className="spin" />
+            </div>
+            <strong>Loading security configuration</strong>
+            <span>Reading the current server-side limits.</span>
+          </div>
+        ) : (
+          <>
+            <SettingItem
+              title="Transaction limit"
+              value={`₹${Number(settings.max_transaction_amount || 0).toLocaleString("en-IN")}`}
+              description="Maximum delegated transaction amount."
+            />
+
+            <SettingItem
+              title="Daily spending limit"
+              value={`₹${Number(settings.daily_limit || 0).toLocaleString("en-IN")}`}
+              description="Server-side daily payment limit."
+            />
+
+            <SettingItem
+              title="Human approval"
+              value={`Above ₹${Number(settings.approval_threshold || 0).toLocaleString("en-IN")}`}
+              description="Payments above this amount are paused for review."
+            />
+
+            <SettingItem
+              title="Behavior monitoring"
+              value="Enabled"
+              description="Persistent agent session monitoring."
+            />
+
+            <SettingItem
+              title="Action ledger"
+              value="Enabled"
+              description="Persistent security event audit trail."
+            />
+
+            <SettingItem
+              title="Idempotency"
+              value="Enabled"
+              description="Prevents duplicate payment orders."
+            />
+          </>
+        )}
+
+      </section>
+
+      {!loading && (
+        <section className="glass-panel" style={{ padding: "22px" }}>
+          <div className="section-kicker" style={{ marginBottom: "7px" }}>
+            <ShieldCheck size={13} />
+            EDIT SECURITY LIMITS
+          </div>
+
+          <h2 style={{ margin: "0 0 6px", fontSize: "20px" }}>
+            Transaction controls
+          </h2>
+
+          <p style={{ margin: "0 0 20px", opacity: 0.7 }}>
+            These values are stored on the AgentShield server and are enforced during payment evaluation.
+          </p>
+
+          <form onSubmit={saveSettings}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                gap: "14px",
+              }}
+            >
+              <FormField
+                label="Max transaction amount (₹)"
+                type="number"
+                value={settings.max_transaction_amount}
+                onChange={(value) =>
+                  updateField("max_transaction_amount", value)
+                }
+              />
+
+              <FormField
+                label="Daily spending limit (₹)"
+                type="number"
+                value={settings.daily_limit}
+                onChange={(value) =>
+                  updateField("daily_limit", value)
+                }
+              />
+
+              <FormField
+                label="Human approval threshold (₹)"
+                type="number"
+                value={settings.approval_threshold}
+                onChange={(value) =>
+                  updateField("approval_threshold", value)
+                }
+              />
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "14px",
+                marginTop: "20px",
+                paddingTop: "18px",
+                borderTop: "1px solid rgba(255,255,255,0.07)",
+              }}
+            >
+              <div style={{ opacity: 0.65, fontSize: "12px", lineHeight: 1.5 }}>
+                Approval threshold ≤ transaction limit ≤ daily limit
+              </div>
+
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button
+                  type="button"
+                  className="secondary-action"
+                  disabled={saving}
+                  onClick={loadSettings}
+                >
+                  <RefreshCw size={14} className={loading ? "spin" : ""} />
+                  Reset
+                </button>
+
+                <button
+                  type="submit"
+                  className="primary-action"
+                  disabled={saving}
+                >
+                  {saving ? (
+                    <>
+                      <RefreshCw size={14} className="spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck size={14} />
+                      Save Security Limits
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+      )}
+
+    </div>
+  );
+}
+
+/* =========================================================
+   SETTING ITEM
+   ========================================================= */
+
+function SettingItem({
+  title,
+  value,
+  description,
+}) {
+  return (
+    <div className="setting-item">
+
+      <div className="setting-icon">
+        <LockKeyhole
+          size={16}
+        />
+      </div>
+
+      <div>
+
+        <span>
+          {title}
+        </span>
+
+        <strong>
+          {value}
+        </strong>
+
+        <p>
+          {description}
+        </p>
+
+      </div>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   EMPTY STATE
+   ========================================================= */
+
+function EmptyState({
+  icon: Icon,
+  title,
+  text,
+}) {
+  return (
+    <div className="empty-state">
+
+      <div className="empty-icon">
+        <Icon size={24} />
+      </div>
+
+      <strong>
+        {title}
+      </strong>
+
+      <span>
+        {text}
+      </span>
+
+    </div>
+  );
+}
+
+/* =========================================================
+   EVENT DRAWER
+   ========================================================= */
+
+function EventDrawer({
+  event,
+  onClose,
+}) {
+  const decision =
+    decisionFromEvent(
+      event
+    );
+
+  return (
+    <>
+      <motion.div
+        className="drawer-overlay"
+        initial={{
+          opacity: 0,
+        }}
+        animate={{
+          opacity: 1,
+        }}
+        exit={{
+          opacity: 0,
+        }}
+        onClick={onClose}
+      />
+
+      <motion.aside
+        className="event-drawer"
+        initial={{
+          x: "100%",
+        }}
+        animate={{
+          x: 0,
+        }}
+        exit={{
+          x: "100%",
+        }}
+        transition={{
+          type: "spring",
+          damping: 27,
+          stiffness: 260,
+        }}
+      >
+
+        <div className="drawer-header">
+
+          <div>
+
+            <div className="panel-eyebrow">
+              EVENT DETAILS
+            </div>
+
+            <h2>
+              {eventLabel(
+                event.event_type
+              )}
+            </h2>
+
+          </div>
+
+          <button
+            type="button"
+            className="drawer-close"
+            onClick={
+              onClose
+            }
+          >
+            <X size={17} />
+          </button>
+
+        </div>
+
+        <div className="drawer-status">
+
+          <span
+            className={clsx(
+              "status-pill",
+              statusClass(
+                decision
+              )
+            )}
+          >
+            {decision ||
+              event.event_type}
+          </span>
+
+          <span>
+            {formatDateTime(
+              event.timestamp
+            )}
+          </span>
+
+        </div>
+
+        <div className="drawer-message">
+
+          <span>
+            MESSAGE
+          </span>
+
+          <p>
+            {event.message ||
+              "No event message."}
+          </p>
+
+        </div>
+
+        <div className="drawer-grid">
+
+          <DrawerField
+            label="Event ID"
+            value={
+              event.event_id
+            }
+          />
+
+          <DrawerField
+            label="Agent"
+            value={
+              event.agent_id
+            }
+          />
+
+          <DrawerField
+            label="Session"
+            value={
+              event.session_id
+            }
+          />
+
+          <DrawerField
+            label="Intent"
+            value={
+              event.intent_id
+            }
+          />
+
+        </div>
+
+        <div className="drawer-json">
+
+          <span>
+            METADATA
+          </span>
+
+          <pre>
+            {JSON.stringify(
+              event.metadata ||
+                {},
+              null,
+              2
+            )}
+          </pre>
+
+        </div>
+
+      </motion.aside>
+    </>
+  );
+}
+
+/* =========================================================
+   DRAWER FIELD
+   ========================================================= */
+
+function DrawerField({
+  label,
+  value,
+}) {
+  return (
+    <div className="drawer-field">
+
+      <span>
+        {label}
+      </span>
+
+      <strong>
+        {value || "--"}
+      </strong>
+
+    </div>
+  );
+}

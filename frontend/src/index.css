@@ -1,0 +1,58 @@
+/* =========================================================
+   AGENTSHIELD GLOBAL STYLES
+   ========================================================= */
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  min-height: 100vh;
+  background: #060a10;
+}
+
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+  background: #060a10;
+  color: #edf5fa;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* Prevent Vite starter styles from interfering */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+}
+
+img,
+svg {
+  display: block;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
